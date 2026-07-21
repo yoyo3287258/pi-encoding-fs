@@ -52,4 +52,12 @@ describe("searchFiles", () => {
     expect(out).toContain("a.b");
     expect(out).not.toContain("axb");
   });
+
+  it("searches a single file when path points at a file", async () => {
+    writeFileSync(join(root, "a.txt"), "needle here\n", "utf-8");
+    writeFileSync(join(root, "b.txt"), "nothing\n", "utf-8");
+    const out = await searchFiles(root, { pattern: "needle", path: "a.txt" });
+    expect(out).toContain("needle here");
+    expect(out).not.toContain("b.txt");
+  });
 });

@@ -1,8 +1,8 @@
 // src/grep.ts
-import { readdir, readFile as fsReadFile } from "node:fs/promises";
+import { readdir, readFile as fsReadFile, stat } from "node:fs/promises";
 import * as path from "node:path";
 import micromatch from "micromatch";
-import { Type, type Static } from "@sinclair/typebox";
+import { Type, type Static } from "typebox";
 import type { ToolDefinition, ExtensionContext, AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { resolveReadEncoding } from "./resolve";
 import { decodeToUtf8 } from "./encoding/converter";
@@ -52,7 +52,17 @@ async function decodeFile(absPath: string): Promise<string> {
 export async function searchFiles(rootAbs: string, input: GrepInput): Promise<string> {
   const base = input.path ? path.resolve(rootAbs, input.path) : rootAbs;
   const files: string[] = [];
-  await walk(base, files);
+  try {
+    const s = await stat(base);
+    if (s.isFile()) {
+      files.push(base);
+    } else if (s.isDirectory()) {
+      await walk(base, files);
+    }
+    // else (other types) → no files
+  } catch {
+    // base doesn't exist or unreadable → no files
+  }
 
   const flags = input.ignoreCase ? "i" : "";
   const source = input.literal ? escapeRegex(input.pattern) : input.pattern;
