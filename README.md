@@ -37,11 +37,32 @@ unless a deeper config overrides it.
 
 ## Requirements
 
-- Encoding detection uses Python + `chardet` when available. If Python is missing, the
-  extension falls back to `sourceEncoding` from config.
+- A [Pi](https://github.com/earendil-works) agent (peer dependency; `>=0.80.0`).
+- Encoding detection uses Python 3 + `chardet` when available. If Python is missing, the
+  extension silently falls back to `sourceEncoding` from config (graceful degradation).
 
 ## Install
 
+From npm:
+
 ```bash
-pi install <npm-or-git-target>
+pi install npm:pi-encoding-fs
 ```
+
+From git:
+
+```bash
+pi install git:github.com/15wtyuan/pi-encoding-fs
+```
+
+## Notes / limitations
+
+- Only `read` / `write` / `edit` / `grep` are overridden. `bash`, `find`, and `ls` are not
+  touched (e.g. a `cat` inside `bash` won't decode GB files).
+- `grep` is a pure-Node implementation (no ripgrep dependency). It excludes
+  `.git` / `.svn` / `.hg` / `node_modules` by default. Honoring `.gitignore` and aligning
+  match limits with Pi's built-in grep are planned for a later release.
+
+## License
+
+MIT

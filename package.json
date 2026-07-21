@@ -4,7 +4,24 @@
   "description": "Encoding-aware read/write/edit/grep for Pi — transparent GB18030/GBK/GB2312 support",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package", "pi-extension", "encoding", "gb18030", "utf-8"],
+  "author": "yuanwentao",
+  "homepage": "https://github.com/15wtyuan/pi-encoding-fs#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/15wtyuan/pi-encoding-fs.git"
+  },
+  "bugs": {
+    "url": "https://github.com/15wtyuan/pi-encoding-fs/issues"
+  },
+  "keywords": ["pi-package", "pi-extension", "encoding", "gb18030", "gbk", "gb2312", "utf-8", "chinese"],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -13,14 +30,14 @@
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.80.0",
     "@earendil-works/pi-coding-agent": ">=0.80.0",
-    "@earendil-works/pi-tui": ">=0.80.0"
+    "@earendil-works/pi-tui": ">=0.80.0",
+    "typebox": "*"
   },
   "dependencies": {
     "iconv-lite": "^0.6.3",
     "micromatch": "^4.0.8"
   },
   "devDependencies": {
-    "@sinclair/typebox": "^0.34.0",
     "@types/micromatch": "^4.0.10",
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0",
