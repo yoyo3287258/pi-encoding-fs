@@ -64,6 +64,8 @@ export async function searchFiles(rootAbs: string, input: GrepInput): Promise<st
     // base doesn't exist or unreadable → no files
   }
 
+  const singleFile = files.length === 1 && files[0] === base;
+
   const flags = input.ignoreCase ? "i" : "";
   const source = input.literal ? escapeRegex(input.pattern) : input.pattern;
   const re = new RegExp(source, flags);
@@ -74,7 +76,7 @@ export async function searchFiles(rootAbs: string, input: GrepInput): Promise<st
   let count = 0;
 
   for (const file of files) {
-    if (input.glob) {
+    if (input.glob && !singleFile) {
       const rel = path.relative(base, file).replace(/\\/g, "/");
       const isBare = !input.glob.includes("/");
       if (!micromatch.isMatch(rel, input.glob, isBare ? { matchBase: true } : undefined)) continue;

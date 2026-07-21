@@ -60,4 +60,16 @@ describe("searchFiles", () => {
     expect(out).toContain("needle here");
     expect(out).not.toContain("b.txt");
   });
+
+  it("single-file path bypasses glob filter (matching glob)", async () => {
+    writeFileSync(join(root, "a.py"), "needle\n", "utf-8");
+    const out = await searchFiles(root, { pattern: "needle", path: "a.py", glob: "*.py" });
+    expect(out).toContain("needle");
+  });
+
+  it("single-file path bypasses glob filter (non-matching glob)", async () => {
+    writeFileSync(join(root, "a.py"), "needle\n", "utf-8");
+    const out = await searchFiles(root, { pattern: "needle", path: "a.py", glob: "*.txt" });
+    expect(out).toContain("needle");
+  });
 });
