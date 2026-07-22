@@ -3,12 +3,18 @@ import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import iconv from "iconv-lite";
+import { createEditToolDefinition } from "@earendil-works/pi-coding-agent";
 import { makeReadOperations, makeWriteOperations, makeEditOperations } from "../src/operations";
+import { wrapEditToolWithEncodingPreview, clearUtf8Cache } from "../src/edit-preview";
 import { clearConfigCache } from "../src/config";
 
 let root: string;
+function putConfig(dir: string) {
+  writeFileSync(join(dir, ".encoding-converter.json"), JSON.stringify({ sourceEncoding: "GB18030" }));
+}
 beforeEach(() => {
   clearConfigCache();
+  clearUtf8Cache();
   root = mkdtempSync(join(tmpdir(), "ops-"));
 });
 
@@ -113,5 +119,31 @@ describe("edit operations (read -> UTF-8 find/replace -> write, as Pi drives it)
     await ops.writeFile(f, utf8.replace("世界", "world"));
 
     expect(readFileSync(f).toString("utf-8")).toBe("hello world\n");
+  });
+});
+
+describe("integration: wrapped edit tool (execute path intact)", () => {
+  it("execute() via the wrapped def still edits a GB18030 file correctly", async () => {
+    putConfig(root);
+    const f = join(root, "wrapped.py");
+    writeFileSync(f, iconv.encode("# 旧的注释\nx = 1\n", "GB18030"));
+
+    // Re-create the exact def the extension registers and run execute().
+    const baseDef = createEditToolDefinition(root, { operations: makeEditOperations() });
+    const def = wrapEditToolWithEncodingPreview(baseDef, makeEditOperations(), root);
+    const res = await def.execute(
+      "call-x",
+      { path: f, edits: [{ oldText: "旧的注释", newText: "新的中文注释" }] },
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+    // On disk must be GB18030 and decode correctly.
+    expect(iconv.decode(readFileSync(f), "GB18030")).toBe("# 新的中文注释\nx = 1\n");
+    // execute() returns the real diff (computed from the encoding-aware read).
+    const diffText = res.details?.diff as string | undefined;
+    expect(diffText).toBeDefined();
+    expect(diffText).toContain("新的中文注释");
+    expect(diffText).toContain("旧的注释");
   });
 });
