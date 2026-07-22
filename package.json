@@ -1,6 +1,6 @@
 {
   "name": "pi-encoding-fs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Encoding-aware read/write/edit/grep for Pi — transparent GB18030/GBK/GB2312 support",
   "type": "module",
   "license": "MIT",

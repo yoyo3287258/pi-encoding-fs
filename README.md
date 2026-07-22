@@ -38,8 +38,11 @@ unless a deeper config overrides it.
 ## Requirements
 
 - A [Pi](https://github.com/earendil-works) agent (peer dependency; `>=0.80.0`).
-- Encoding detection uses Python 3 + `chardet` when available. If Python is missing, the
-  extension silently falls back to `sourceEncoding` from config (graceful degradation).
+- Encoding detection (for `read`/`write`/`edit`) uses Python 3 + `chardet` when available.
+  If Python is missing, the extension silently falls back to `sourceEncoding` from config.
+- `grep` uses [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) for fast,
+  encoding-aware search. If `rg` is not found on `PATH`, `grep` transparently
+  falls back to Pi's built-in grep (which cannot search inside GB-encoded files).
 
 ## Install
 
@@ -59,9 +62,10 @@ pi install git:github.com/15wtyuan/pi-encoding-fs
 
 - Only `read` / `write` / `edit` / `grep` are overridden. `bash`, `find`, and `ls` are not
   touched (e.g. a `cat` inside `bash` won't decode GB files).
-- `grep` is a pure-Node implementation (no ripgrep dependency). It excludes
-  `.git` / `.svn` / `.hg` / `node_modules` by default. Honoring `.gitignore` and aligning
-  match limits with Pi's built-in grep are planned for a later release.
+- `grep` shells out to `ripgrep` with `--encoding` per encoding group (derived from the
+  nearest `.encoding-converter.json`), so searching Chinese inside GB18030 files is both
+  correct and fast. It excludes `.git` / `.svn` / `.hg` / `node_modules` by default.
+  Honoring `.gitignore` and aligning match limits with Pi's built-in grep are planned.
 
 ## License
 
