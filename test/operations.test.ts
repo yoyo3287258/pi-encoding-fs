@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import iconv from "iconv-lite";
-import { makeReadOperations, makeWriteOperations } from "../src/operations";
+import { makeReadOperations, makeWriteOperations, makeEditOperations } from "../src/operations";
 import { clearConfigCache } from "../src/config";
 
 let root: string;
@@ -60,5 +60,58 @@ describe("write operations", () => {
     await ops.writeFile(f, "a中\nb文\n");
     const decoded = iconv.decode(readFileSync(f), "GB18030");
     expect(decoded).toBe("a中\r\nb文\r\n");
+  });
+});
+
+describe("edit operations (read -> UTF-8 find/replace -> write, as Pi drives it)", () => {
+  it("exposes readFile, writeFile and access", () => {
+    const ops = makeEditOperations();
+    expect(typeof ops.readFile).toBe("function");
+    expect(typeof ops.writeFile).toBe("function");
+    expect(typeof ops.access).toBe("function");
+  });
+
+  it("edits a GB18030 file and writes it back as GB18030 (encoding preserved)", async () => {
+    writeFileSync(join(root, ".encoding-converter.json"), JSON.stringify({ sourceEncoding: "GB18030" }));
+    const f = join(root, "code.py");
+    writeFileSync(f, iconv.encode("# 旧的注释\nx = 1\n", "GB18030"));
+    const ops = makeEditOperations();
+
+    // Pi's edit flow: read (decodes to UTF-8), find/replace on UTF-8 text, write back.
+    const utf8 = (await ops.readFile(f)).toString("utf-8");
+    expect(utf8).toBe("# 旧的注释\nx = 1\n");
+    const edited = utf8.replace("旧的注释", "新的中文注释");
+    await ops.writeFile(f, edited);
+
+    // On disk must still be GB18030 bytes (not UTF-8) and decode correctly.
+    const bytes = readFileSync(f);
+    expect(iconv.decode(bytes, "GB18030")).toBe("# 新的中文注释\nx = 1\n");
+    expect(bytes.equals(Buffer.from("# 新的中文注释\nx = 1\n", "utf-8"))).toBe(false);
+  });
+
+  it("preserves CRLF line endings through an edit round-trip", async () => {
+    writeFileSync(join(root, ".encoding-converter.json"), JSON.stringify({ sourceEncoding: "GB18030" }));
+    const f = join(root, "crlf.py");
+    writeFileSync(f, iconv.encode("第一行\r\n第二行\r\n", "GB18030"));
+    const ops = makeEditOperations();
+
+    const utf8 = (await ops.readFile(f)).toString("utf-8");
+    const edited = utf8.replace("第二行", "改后的第二行");
+    await ops.writeFile(f, edited);
+
+    const decoded = iconv.decode(readFileSync(f), "GB18030");
+    expect(decoded).toBe("第一行\r\n改后的第二行\r\n");
+  });
+
+  it("passthrough: edits a UTF-8 file (no config) staying UTF-8", async () => {
+    const f = join(root, "plain.txt");
+    writeFileSync(f, "hello 世界\n", "utf-8");
+    const ops = makeEditOperations();
+
+    const utf8 = (await ops.readFile(f)).toString("utf-8");
+    expect(utf8).toBe("hello 世界\n");
+    await ops.writeFile(f, utf8.replace("世界", "world"));
+
+    expect(readFileSync(f).toString("utf-8")).toBe("hello world\n");
   });
 });
