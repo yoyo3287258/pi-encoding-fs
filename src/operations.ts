@@ -1,6 +1,8 @@
 // src/operations.ts
 import { readFile, writeFile, mkdir, access } from "node:fs/promises";
 import { constants } from "node:fs";
+import * as path from "node:path";
+import { clearConfigCache } from "./config";
 import type {
   ReadOperations,
   WriteOperations,
@@ -33,11 +35,16 @@ async function writeEncoded(absPath: string, utf8content: string): Promise<void>
   const enc = await resolveWriteEncoding(absPath);
   if (!enc || enc.toUpperCase() === "UTF-8") {
     await writeFile(absPath, utf8content, "utf-8"); // passthrough / UTF-8
-    return;
+  } else {
+    const style = await detectExistingLineEnding(absPath);
+    const restored = style ? restoreLineEndings(utf8content, style) : utf8content;
+    await writeFile(absPath, encodeFromUtf8(restored, enc));
   }
-  const style = await detectExistingLineEnding(absPath);
-  const restored = style ? restoreLineEndings(utf8content, style) : utf8content;
-  await writeFile(absPath, encodeFromUtf8(restored, enc));
+  // Writing the config file changes encoding decisions for the tree below it;
+  // invalidate the cache so later read/write/grep reflect the new config.
+  if (path.basename(absPath) === ".encoding-converter.json") {
+    clearConfigCache();
+  }
 }
 
 export function makeReadOperations(): ReadOperations {

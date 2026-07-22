@@ -15,6 +15,11 @@ Encoding is decided **per file**: the extension walks up from the file's directo
 nearest `.encoding-converter.json`. If none is found, it passes through as plain UTF-8
 (identical to not having the extension installed).
 
+The extension also injects a short note into the system prompt so the agent knows the
+built-in tools already handle GB↔UTF-8 transcoding (no need to run `iconv` or re-save
+files), and — when no config exists — how to create a `.encoding-converter.json` itself
+if it ever reads garbled Chinese. The note is constant so prompt caching stays effective.
+
 ## Configuration
 
 Place `.encoding-converter.json` in any directory. It applies to files at or below it,
