@@ -11,9 +11,19 @@ import type {
 import { resolveReadEncoding, resolveWriteEncoding } from "./resolve";
 import { decodeToUtf8, encodeFromUtf8 } from "./encoding/converter";
 import { detectLineEnding, restoreLineEndings, type LineEndingStyle } from "./encoding/line-endings";
+import {
+  detectSupportedImageMimeType,
+  detectSupportedImageMimeTypeFromFile,
+} from "./encoding/mime";
 
 async function readAsUtf8Buffer(absPath: string): Promise<Buffer> {
   const raw = await readFile(absPath);
+  // Images must stay binary. Pi's read tool calls ops.readFile() after MIME
+  // detection; running GB→UTF-8 iconv on PNG/JPEG bytes corrupts them and the
+  // model receives garbage instead of an image attachment.
+  if (detectSupportedImageMimeType(raw)) {
+    return raw;
+  }
   const enc = await resolveReadEncoding(absPath);
   if (!enc || enc.toUpperCase() === "UTF-8") {
     return raw; // passthrough / already UTF-8
@@ -51,6 +61,9 @@ export function makeReadOperations(): ReadOperations {
   return {
     readFile: (absPath) => readAsUtf8Buffer(absPath),
     access: (absPath) => access(absPath, constants.R_OK),
+    // Required: without this hook Pi skips the image branch entirely and treats
+    // PNG/JPEG bytes as UTF-8 text (model never gets an image attachment).
+    detectImageMimeType: detectSupportedImageMimeTypeFromFile,
   };
 }
 

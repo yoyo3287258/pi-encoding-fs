@@ -3,10 +3,15 @@ import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import iconv from "iconv-lite";
-import { createEditToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createEditToolDefinition, createReadToolDefinition } from "@earendil-works/pi-coding-agent";
 import { makeReadOperations, makeWriteOperations, makeEditOperations } from "../src/operations";
 import { wrapEditToolWithEncodingPreview, clearUtf8Cache } from "../src/edit-preview";
 import { clearConfigCache } from "../src/config";
+
+// 1x1 red PNG — same fixture pi uses in tools.test.ts
+const TINY_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const TINY_PNG = Buffer.from(TINY_PNG_BASE64, "base64");
 
 let root: string;
 function putConfig(dir: string) {
@@ -36,6 +41,49 @@ describe("read operations", () => {
     const out = await ops.readFile(f);
     // Pi will decode this buffer as UTF-8:
     expect(out.toString("utf-8")).toBe("你好世界");
+  });
+
+  it("exposes detectImageMimeType so Pi can take the image branch", async () => {
+    const f = join(root, "dot.png");
+    writeFileSync(f, TINY_PNG);
+    const ops = makeReadOperations();
+    expect(typeof ops.detectImageMimeType).toBe("function");
+    await expect(ops.detectImageMimeType!(f)).resolves.toBe("image/png");
+  });
+
+  it("detectImageMimeType returns null for plain text", async () => {
+    const f = join(root, "a.txt");
+    writeFileSync(f, "hello\n", "utf-8");
+    const ops = makeReadOperations();
+    await expect(ops.detectImageMimeType!(f)).resolves.toBeNull();
+  });
+
+  it("with GB config: PNG bytes are returned unchanged (no iconv round-trip)", async () => {
+    writeFileSync(join(root, ".encoding-converter.json"), JSON.stringify({ sourceEncoding: "GB18030" }));
+    const f = join(root, "dot.png");
+    writeFileSync(f, TINY_PNG);
+    const ops = makeReadOperations();
+    const out = await ops.readFile(f);
+    expect(out.equals(TINY_PNG)).toBe(true);
+  });
+
+  it("read tool returns an image content block for PNG (not text mojibake)", async () => {
+    const f = join(root, "dot.png");
+    writeFileSync(f, TINY_PNG);
+    const def = createReadToolDefinition(root, { operations: makeReadOperations() });
+    const result = await def.execute(
+      "call-img",
+      { path: f },
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+    const image = result.content.find((c) => c.type === "image");
+    expect(image).toBeDefined();
+    expect(image).toMatchObject({ type: "image", mimeType: "image/png" });
+    // And not the text-only branch that dumps binary as Replaced UTF-8.
+    const text = result.content.find((c) => c.type === "text");
+    expect(text?.type === "text" ? text.text : "").toContain("Read image file");
   });
 });
 
