@@ -182,3 +182,30 @@ export function unmappableChars(text: string, encoding: string): string[] {
 export function charListMessage(chars: string[]): string {
   return chars.map((c) => `${c} U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`).join(", ");
 }
+
+/**
+ * 把该编码无法表示的码点替换成 Java 风格的 `\uXXXX` 转义（非 BMP 用代理对两次转义）。
+ * `unmappable: "escape"` 策略用；对 .java/.js 的字符串字面量是真转义，
+ * 对注释/其它文件只是可读的占位文本 —— 因此默认策略仍是 "error"。
+ */
+export function escapeUnmappable(text: string, encoding: string): string {
+  if (canEncodeAll(text, encoding)) return text;
+  let out = "";
+  for (const ch of text) {
+    const b = iconv.encode(ch, encoding);
+    const lossy = b.includes(0x3f) || iconv.decode(b, encoding) !== ch;
+    if (!lossy) {
+      out += ch;
+      continue;
+    }
+    const cp = ch.codePointAt(0)!;
+    if (cp > 0xffff) {
+      const hi = 0xd800 + ((cp - 0x10000) >> 10);
+      const lo = 0xdc00 + ((cp - 0x10000) & 0x3ff);
+      out += `\\u${hi.toString(16).padStart(4, "0")}\\u${lo.toString(16).padStart(4, "0")}`;
+    } else {
+      out += `\\u${cp.toString(16).padStart(4, "0")}`;
+    }
+  }
+  return out;
+}

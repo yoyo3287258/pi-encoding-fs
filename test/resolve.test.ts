@@ -319,3 +319,48 @@ describe("schema v2 解析（§4）", () => {
     expect((await ruleFor(props))!.sourceEncoding).toBe("ISO-8859-1");
   });
 });
+
+describe("override.encoding 与根 writeEncoding 的优先级（P2 定稿）", () => {
+  it("根无迁移意图（write=source）：override 只写 encoding → 新文件/纯 ASCII 按该 override 写", async () => {
+    putConfig(root, {
+      sourceEncoding: "GBK",
+      writeEncoding: "GBK",
+      overrides: [{ pattern: "docs/**", encoding: "UTF-8" }],
+    });
+    mkdirSync(join(root, "docs"), { recursive: true });
+    const fresh = join(root, "docs", "NEW.md");
+    expect((await resolveWritePlan(fresh, "# 标题：中文\r\n")).encoding).toBe("UTF-8");
+    const ascii = join(root, "docs", "a.md");
+    writeFileSync(ascii, "# ascii only\n");
+    expect((await resolveWritePlan(ascii, "# ascii only + 中文\n")).encoding).toBe("UTF-8");
+    // 同目录里真是 GBK 的文件仍按字节判定走（§3.2：已判定出的编码优先，不被目录 override 拉去转码）
+    const gbkInDocs = join(root, "docs", "legacy.md");
+    writeFileSync(gbkInDocs, iconv.encode("# 旧文档 中文\r\n", "GBK"));
+    const p = await resolveWritePlan(gbkInDocs, "x");
+    expect(p.reject, "GBK 字节无法在 UTF-8 下无损回环 → 闸门 3 应拒").toContain("无损");
+    // 警告里要点名那条 override，让用户知道怎么改
+    const r = await ruleFor(gbkInDocs);
+    expect(r!.matchedPattern).toBe("docs/**");
+  });
+
+  it("根有迁移意图（write≠source）：根 writeEncoding 赢，并给出可读警告", async () => {
+    putConfig(root, {
+      sourceEncoding: "GBK",
+      writeEncoding: "UTF-8",
+      overrides: [{ pattern: "docs/**", encoding: "GBK" }],
+    });
+    mkdirSync(join(root, "docs"), { recursive: true });
+    const p = join(root, "docs", "n.md");
+    const plan = await resolveWritePlan(p, "# 新\r\n");
+    expect(plan.encoding).toBe("UTF-8"); // 没被 override 推翻
+    expect(plan.warnings.join("\n")).toContain("迁移意图");
+    // 显式在 override 里写 writeEncoding 就能反过来锁住
+    clearConfigCache();
+    putConfig(root, {
+      sourceEncoding: "GBK",
+      writeEncoding: "UTF-8",
+      overrides: [{ pattern: "docs/**", encoding: "GBK", writeEncoding: "GBK" }],
+    });
+    expect((await resolveWritePlan(p, "# 新\r\n")).encoding).toBe("GBK");
+  });
+});

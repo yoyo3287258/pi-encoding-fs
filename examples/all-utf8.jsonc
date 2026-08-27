@@ -1,0 +1,5 @@
+// 全 UTF-8 仓库：装了只多三层保护（UTF-16/BOM 保持、二进制拒写、闸门 2 回读校验）
+{
+  "sourceEncoding": "UTF-8",
+  "writeEncoding": "UTF-8"
+}

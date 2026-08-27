@@ -333,9 +333,24 @@ export function resolveFileRule(absFilePath: string, found: FoundConfig): Resolv
   const { config, configDir } = found;
   const { rule } = pickOverride(absFilePath, found);
   const warnings = [...(found.warnings ?? [])];
-  const sourceEncoding = normalizeRuleLabel(rule?.encoding ?? rule?.sourceEncoding) ?? config.sourceEncoding;
+  const overrideRead = normalizeRuleLabel(rule?.encoding ?? rule?.sourceEncoding);
+  const sourceEncoding = overrideRead ?? config.sourceEncoding;
+  const rootWrite = normalizeRuleLabel(config.writeEncoding);
+  const rootSource = normalizeRuleLabel(config.sourceEncoding);
+  // “根配置有迁移意图” := 根同时写了 writeEncoding 且与 sourceEncoding 不同。
+  const migrationIntent = !!rootWrite && !!rootSource && rootWrite !== rootSource;
+  // override 只写 encoding 且根无迁移意图 → 写目标跟着该 override（“这个目录是 UTF-8”
+  // 的自然语义包含“新文件/纯 ASCII 文件也按 UTF-8 写”）；根有迁移意图时根赢，避免默默推翻迁移。
   const writeEncoding =
-    normalizeRuleLabel(rule?.writeEncoding) ?? config.writeEncoding ?? sourceEncoding;
+    normalizeRuleLabel(rule?.writeEncoding) ??
+    (overrideRead && !migrationIntent ? overrideRead : rootWrite ?? sourceEncoding);
+  if (migrationIntent && overrideRead && rootWrite && overrideRead !== rootWrite && !rule?.writeEncoding) {
+    warnings.push(
+      `${configDir}: 根配置带迁移意图（sourceEncoding=${rootSource} → writeEncoding=${rootWrite}），` +
+        `而 override "${rule?.pattern}" 只声明了读编码 ${overrideRead} → 该目录里**新建/纯 ASCII** 文件仍按 ${rootWrite} 写。` +
+        `要让它们也用 ${overrideRead}，请在那条 override 里显式加 "writeEncoding": "${overrideRead}"。`,
+    );
+  }
   if (rule?.writeEncoding && rule.encoding === undefined && rule.sourceEncoding === undefined) {
     warnings.push(`${configDir}: override "${rule.pattern}" 只写了 writeEncoding，读编码沿用 ${sourceEncoding}`);
   }

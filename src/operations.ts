@@ -11,10 +11,19 @@ import type {
   WriteOperations,
   EditOperations,
 } from "@earendil-works/pi-coding-agent";
-import { clearConfigCache } from "./config";
+import { clearConfigCache, type ResolvedConfig } from "./config";
 import { resolveReadPlan, resolveWritePlan, type WritePlan } from "./resolve";
-import { decodeToUtf8, encodeFromUtf8 } from "./encoding/converter";
-import { invalidateClassifyCache } from "./encoding/classify";
+import {
+  canEncodeAll,
+  charListMessage,
+  decodeToUtf8,
+  encodeFromUtf8,
+  escapeUnmappable,
+  isGBEncoding,
+  normalizeEncoding,
+  unmappableChars,
+} from "./encoding/converter";
+import { classifyBuffer, describeVerdict, invalidateClassifyCache } from "./encoding/classify";
 import { detectLineEnding, restoreLineEndings, type LineEndingStyle } from "./encoding/line-endings";
 import {
   detectSupportedImageMimeType,
@@ -56,37 +65,194 @@ async function detectExistingLineEnding(absPath: string): Promise<LineEndingStyl
   }
 }
 
-/** 闸门 1（不可映射字符）与闸门 2（回读自校验）在 P2 接入；P1 先落决策矩阵与 BOM 规则。 */
-async function encodeForWrite(plan: WritePlan, content: string, absPath: string): Promise<Buffer> {
+/**
+ * 闸门 1（§3.3）：不可映射字符必须响亮失败，禁止静默变成 `?`。
+ * 策略："error"（默认）| "escape"（转 \uXXXX）| "drop-to-gb18030"（自动升级到 GB18030）。
+ */
+function gate1Message(absPath: string, bad: string[], enc: string, strategy: string): string {
+  const list = charListMessage(bad.slice(0, 12));
+  const more = bad.length > 12 ? `…共 ${bad.length} 个不同字符` : "";
+  return (
+    `闸门 1 拒写 ${absPath}：目标编码 ${enc} 无法表示以下内容（写下去会永久变成 '?'）：` +
+    `${list}${more}。` +
+    (isGBEncoding(enc)
+      ? `建议把该目录/该 pattern 的 "writeEncoding" 改成 "GB18030"（它是 GBK 的严格超集，` +
+        `对既有 GBK 内容逐字节不变，性质 P-4）。`
+      : `建议把 "writeEncoding" 改成能包含这些码点的编码（如 UTF-8 / GB18030）。`) +
+    `（当前 unmappable="${strategy}"；也可用 "escape" 转 \\uXXXX，或 "drop-to-gb18030" 自动升级）`
+  );
+}
+
+function applyGate1(
+  plan: WritePlan,
+  text: string,
+  absPath: string,
+): { encoding: string; text: string; note: string | null } {
   const enc = plan.encoding!;
+  const strategy = plan.rule?.unmappable ?? "error";
+  if (canEncodeAll(text, enc)) return { encoding: enc, text, note: null };
+  const bad = unmappableChars(text, enc);
+  if (bad.length === 0) return { encoding: enc, text, note: null }; // canEncodeAll 的保守判否，逐码点确认无损
+  if (strategy === "escape") {
+    const escaped = escapeUnmappable(text, enc);
+    return {
+      encoding: enc,
+      text: escaped,
+      note:
+        `闸门 1（escape）：${bad.length} 个 ${enc} 无法表示的字符已转成 \\uXXXX 转义：` +
+        `${charListMessage(bad.slice(0, 12))}`,
+    };
+  }
+  if (strategy === "drop-to-gb18030" && isGBEncoding(enc) && normalizeEncoding(enc) !== "GB18030") {
+    if (unmappableChars(text, "GB18030").length === 0) {
+      return {
+        encoding: "GB18030",
+        text,
+        note:
+          `闸门 1（drop-to-gb18030）：${enc} 无法表示 ${charListMessage(bad.slice(0, 12))}，` +
+          `本次已自动改用 GB18030 写出（对既有 GBK 内容逐字节不变）`,
+      };
+    }
+    throw new Error(gate1Message(absPath, unmappableChars(text, "GB18030"), "GB18030", strategy));
+  }
+  throw new Error(gate1Message(absPath, bad, enc, strategy));
+}
+
+async function encodeForWrite(
+  plan: WritePlan,
+  encoding: string,
+  text: string,
+  absPath: string,
+): Promise<{ bytes: Buffer; text: string; bomLen: number }> {
   // pi 的 edit 会把 `bom + content` 原样传进来；BOM 统一由 plan.addBom 在字节层还原，
   // 所以这里先把 U+FEFF 从文本里摘掉，避免双份 BOM。
-  const body = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
-  const upper = enc.toUpperCase();
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const upper = encoding.toUpperCase();
   if (upper === "UTF-8") {
     // 行尾交给 pi 自己处理（它的 edit-diff 已经恢复过一次），我们只负责补回 BOM。
     const bom = plan.addBom === "utf8" ? BOM_BYTES.utf8 : Buffer.alloc(0);
-    return Buffer.concat([bom, Buffer.from(body, "utf-8")]);
+    return { bytes: Buffer.concat([bom, Buffer.from(body, "utf-8")]), text: body, bomLen: bom.length };
   }
   const style = await detectExistingLineEnding(absPath);
   const restored = style ? restoreLineEndings(body, style) : body;
-  const bytes = encodeFromUtf8(restored, enc);
+  const bytes = encodeFromUtf8(restored, encoding);
   const bom =
     plan.addBom === "utf16le" ? BOM_BYTES.utf16le : plan.addBom === "utf16be" ? BOM_BYTES.utf16be : Buffer.alloc(0);
-  return Buffer.concat([bom, bytes]);
+  return { bytes: Buffer.concat([bom, bytes]), text: restored, bomLen: bom.length };
 }
 
-async function writeEncoded(absPath: string, utf8content: string): Promise<void> {
+/**
+ * 闸门 2：写后回读自校验。三件事：字节与我们要写的完全一致 → 判定仍是那个编码 →
+ * 解码回来与期望文本相等。失败返回错因，调用方负责回滚。
+ */
+async function verifyWritten(
+  absPath: string,
+  expectedBytes: Buffer,
+  expectedText: string,
+  encoding: string,
+  rule: ResolvedConfig,
+  bomLen = 0,
+): Promise<string | null> {
+  let written: Buffer;
+  try {
+    written = await readFile(absPath);
+  } catch (e) {
+    return `写后无法回读（${(e as Error).message}）`;
+  }
+  if (Buffer.compare(written, expectedBytes) !== 0) {
+    return `写后回读的字节与预期不一致（${written.length}B vs ${expectedBytes.length}B，可能被其它进程改写）`;
+  }
+  const v = classifyBuffer(written, {
+    sourceEncoding: encoding,
+    autoCandidates: rule.autoCandidates,
+    force: false,
+  });
+  const encU = encoding.toUpperCase();
+  const okKind =
+    v.kind === "ascii" || // 内容恰好全是 ASCII：字节上无法区分，不算错
+    (encU === "UTF-8" && (v.kind === "utf8" || v.kind === "utf8-bom")) ||
+    (encU !== "UTF-8" && (v.kind === "cjk" || v.kind === "config")) ||
+    (encU === "UTF-16LE" && v.kind === "utf16le") ||
+    (encU === "UTF-16BE" && v.kind === "utf16be");
+  if (!okKind) return `写后判定为 ${describeVerdict(v)}，与期望 ${encoding} 不符`;
+  if (encU !== "UTF-8" && v.kind === "cjk" && normalizeEncoding(v.encoding) !== normalizeEncoding(encoding)) {
+    return `写后判定为 ${v.encoding}，与期望 ${encoding} 不符`;
+  }
+  const text =
+    encU === "UTF-8"
+      ? written.subarray(bomLen).toString("utf-8")
+      : decodeToUtf8(written.subarray(bomLen), encoding);
+  if (text !== expectedText) {
+    const i = firstDiffIndex(text, expectedText);
+    return `写后按 ${encoding} 解码与期望文本不一致（首个差异偏移 ${i}）`;
+  }
+  return null;
+}
+
+function firstDiffIndex(a: string, b: string): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return i;
+  return a.length === b.length ? -1 : n;
+}
+
+export interface WriteSeam {
+  /** 落盘方式（默认为同目录临时文件 + fsync + rename 的原子替换）；测试可注入以验证回滚 */
+  writeBytes: (absPath: string, bytes: Buffer) => Promise<void>;
+}
+
+export const defaultWriteSeam: WriteSeam = { writeBytes: atomicReplace };
+
+async function writeEncoded(absPath: string, utf8content: string, seam: WriteSeam = defaultWriteSeam): Promise<void> {
   const plan = await resolveWritePlan(absPath, utf8content);
   if (plan.reject) throw new Error(plan.reject); // 闸门 3：拿不准就不写
 
   if (!plan.encoding) {
-    // 完全透传：与未装本扩展逐字节一致
+    // 完全透传：用与 pi 内置一致的 writeFile（不提前新建 inode、不改换文件）→
+    // 保证 §8 A-1「无配置目录行为与未装扩展逐字节一致」。原子替换只用于我们真的转码时。
     await writeFile(absPath, utf8content, "utf-8");
-  } else {
-    const bytes = await encodeForWrite(plan, utf8content, absPath);
-    await writeFile(absPath, bytes);
+    afterWrite(absPath);
+    return;
   }
+
+  // 闸门 1：不可映射字符（可能升级编码或改写文本，因此必须在编码之前做）
+  const g1 = applyGate1(plan, utf8content, absPath);
+  const { bytes, text, bomLen } = await encodeForWrite(plan, g1.encoding, g1.text, absPath);
+
+  // 闸门 2：写前备份 + 原子替换 + 写后回读自校验，不一致就回滚
+  const verify = plan.rule?.verifyWrite !== false;
+  let backup: Buffer | null = null;
+  try {
+    backup = await readFile(absPath);
+  } catch {
+    backup = null; // 新建文件
+  }
+  try {
+    await seam.writeBytes(absPath, bytes);
+  } catch (e) {
+    if (backup) await seam.writeBytes(absPath, backup).catch(() => undefined);
+    throw new Error(
+      `写入 ${absPath} 失败，磁盘保持原样：${(e as Error).message}${g1.note ? `（${g1.note}）` : ""}`,
+    );
+  }
+  if (verify && plan.rule) {
+    const problem = await verifyWritten(absPath, bytes, text, g1.encoding, plan.rule, bomLen);
+    if (problem) {
+      if (backup) {
+        await seam.writeBytes(absPath, backup).catch(() => undefined);
+        throw new Error(
+          `闸门 2（写后自校验）失败：${problem}。已回滚为写前内容。${g1.note ? `（${g1.note}）` : ""}`,
+        );
+      }
+      await unlink(absPath).catch(() => undefined);
+      throw new Error(
+        `闸门 2（写后自校验）失败：${problem}。该文件写前不存在，已删除半成品。${g1.note ? `（${g1.note}）` : ""}`,
+      );
+    }
+  }
+  afterWrite(absPath);
+}
+
+function afterWrite(absPath: string): void {
   invalidateClassifyCache(absPath);
   // 写配置会改变其下整棵树的编码决策 → 失效缓存
   if (path.basename(absPath) === ".encoding-converter.json") {
@@ -103,22 +269,22 @@ export function makeReadOperations(): ReadOperations {
   };
 }
 
-export function makeWriteOperations(): WriteOperations {
+export function makeWriteOperations(seam: WriteSeam = defaultWriteSeam): WriteOperations {
   return {
-    writeFile: (absPath, content) => writeEncoded(absPath, content),
+    writeFile: (absPath, content) => writeEncoded(absPath, content, seam),
     mkdir: (dir) => mkdir(dir, { recursive: true }).then(() => undefined),
   };
 }
 
-export function makeEditOperations(): EditOperations {
+export function makeEditOperations(seam: WriteSeam = defaultWriteSeam): EditOperations {
   return {
     readFile: (absPath) => readAsUtf8Buffer(absPath),
-    writeFile: (absPath, content) => writeEncoded(absPath, content),
+    writeFile: (absPath, content) => writeEncoded(absPath, content, seam),
     access: (absPath) => access(absPath, constants.R_OK | constants.W_OK),
   };
 }
 
-// P2 会用到：同目录临时文件 + fsync + rename 的原子替换（以及写前备份回滚）。
+// 同目录临时文件 + fsync + rename 的原子替换（闸门 2 的基础）。
 export async function atomicReplace(absPath: string, bytes: Buffer): Promise<void> {
   const tmp = `${absPath}.${randomBytes(6).toString("hex")}.encfs.tmp`;
   const fh = await open(tmp, "w");

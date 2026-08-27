@@ -318,10 +318,11 @@ export async function resolveWritePlan(absFilePath: string, content: string): Pr
       verdict,
       addBom: "",
       reject:
-        `拒写 ${absFilePath}：磁盘字节判定为 ${verdict.encoding}，但目标写编码 ${encoding} 不能无损表示它们 ` +
+        `拒写 ${absFilePath}：磁盘字节判定为 ${verdict.encoding}，但目标写编码 ${encoding}` +
+        `${rule.matchedPattern ? `（来自 override "${rule.matchedPattern}"）` : `（来自 ${rule.configDir} 的配置）`}不能无损表示它们` +
         `（逐字节回环不相等，未改动的部分会被静默改写）。` +
-        `建议：把 writeEncoding 改成 ${verdict.candidates[0] ?? "GB18030"}（GB18030 是 GBK 的严格超集，` +
-        `对既有 GBK 内容逐字节不变，性质 P-4）；若确要降级，在该 pattern 上显式 "force": true。`,
+        `建议：把该作 ${isGBEncoding(encoding) && encoding.toUpperCase() !== "GB18030" ? " writeEncoding 改成 GB18030（它是 GBK 的严格超集，对既有 GBK 内容逐字节不变，性质 P-4）" : "该 override 的 encoding 改成 ${verdict.encoding}"}；` +
+        `若该文件确实是个例外，删了/改窄那条 override；若真要降级转换，在该 pattern 上显式 "force": true。`,
       warnings,
       transcoding: false,
     };
