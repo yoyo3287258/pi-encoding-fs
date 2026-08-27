@@ -124,11 +124,13 @@ function applyEditsExact(normalizedContent: string, edits: EditEdit[], filePath:
 }
 
 // --- mtime-cached, synchronous UTF-8 validity probe -----------------------------------------
-// renderCall() is synchronous, so we cannot await async encoding resolution
-// (chardet spawns python). Instead we use the byte-level fact that GB18030/GBK
-// streams are NOT valid UTF-8: TextDecoder(fatal) throws on them. This needs no
-// config and no detection — it is a pure byte check. mtime-cached so the per-
-// keystream renderCall cost stays ~free on already-known files.
+// renderCall() is synchronous, so we cannot await the async encoding resolution in
+// src/resolve.ts. Instead we use the byte-level fact that GB18030/GBK streams are NOT
+// valid UTF-8: TextDecoder(fatal) throws on them. This needs no config and no external
+// probe — it is a pure byte check, and it is exactly step 6 of the deterministic chain
+// in src/encoding/classify.ts. mtime-cached so the per-keystream renderCall cost stays
+// ~free on already-known files. (P3: reuse classifyBuffer here so single-byte legacy
+// encodings are routed by config instead of being treated as generic non-UTF-8.)
 
 interface CacheEntry {
   mtimeMs: number;

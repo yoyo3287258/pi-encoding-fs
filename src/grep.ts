@@ -122,12 +122,13 @@ export function buildEncodingGroups(found: FoundConfig): EncodingGroup[] {
   const excludeDirs = new Set<string>();
 
   for (const ov of config.overrides ?? []) {
-    if (ov.sourceEncoding === defaultEncoding) continue;
+    const enc = ov.encoding ?? ov.sourceEncoding ?? defaultEncoding; // v2 用 encoding，v1 用 sourceEncoding
+    if (enc === defaultEncoding) continue;
     const dir = globDirPrefix(ov.pattern);
     if (dir === ".") continue; // root-level override can't be isolated by dir
     excludeDirs.add(dir);
-    if (!overrideGroups.has(ov.sourceEncoding)) overrideGroups.set(ov.sourceEncoding, new Set());
-    overrideGroups.get(ov.sourceEncoding)!.add(dir);
+    if (!overrideGroups.has(enc)) overrideGroups.set(enc, new Set());
+    overrideGroups.get(enc)!.add(dir);
   }
 
   const groups: EncodingGroup[] = [

@@ -67,5 +67,3 @@ jobs:
             exit 1
           fi
           echo "OK: src/ 零 python 引用"
-        # P1 合入前该步骤允许失败，故先 continue-on-error；P1 完成后删除这一行。
-        continue-on-error: true

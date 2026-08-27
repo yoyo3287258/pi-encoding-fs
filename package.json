@@ -1,17 +1,17 @@
 {
-  "name": "pi-encoding-fs",
-  "version": "0.4.0",
-  "description": "Encoding-aware read/write/edit/grep for Pi — transparent GB18030/GBK/GB2312 support",
+  "name": "@yoyo3287258/pi-encoding-fs",
+  "version": "0.5.0",
+  "description": "Encoding-aware read/write/edit/grep for Pi — 零依赖确定性字节判定（GB18030/GBK/Big5/…）+ 三道写入门禁，永不静默损坏文件",
   "type": "module",
   "license": "MIT",
   "author": "yuanwentao",
-  "homepage": "https://github.com/15wtyuan/pi-encoding-fs#readme",
+  "homepage": "https://github.com/yoyo3287258/pi-encoding-fs#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/15wtyuan/pi-encoding-fs.git"
+    "url": "git+https://github.com/yoyo3287258/pi-encoding-fs.git"
   },
   "bugs": {
-    "url": "https://github.com/15wtyuan/pi-encoding-fs/issues"
+    "url": "https://github.com/yoyo3287258/pi-encoding-fs/issues"
   },
   "keywords": [
     "pi-package",
@@ -19,7 +19,10 @@
     "encoding",
     "gb18030",
     "gbk",
-    "gb2312",
+    "big5",
+    "euc-kr",
+    "shift-jis",
+    "iso-8859-1",
     "utf-8",
     "chinese"
   ],
@@ -34,12 +37,14 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "fixtures": "node test/fixtures/gen.ts",
+    "scan": "node tools/scan-encoding.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.80.0",
-    "@earendil-works/pi-coding-agent": ">=0.80.0",
-    "@earendil-works/pi-tui": ">=0.80.0",
+    "@earendil-works/pi-ai": ">=0.84.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.0",
+    "@earendil-works/pi-tui": ">=0.84.0",
     "typebox": "*"
   },
   "dependencies": {
@@ -56,5 +61,8 @@
     "extensions": [
       "./src/index.ts"
     ]
-  }
+  },
+  "contributors": [
+    "yuanwentao (upstream author of 15wtyuan/pi-encoding-fs)"
+  ]
 }
