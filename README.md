@@ -1,5 +1,18 @@
 # pi-encoding-fs
 
+> ⚠️ **这是 fork（`yoyo3287258/pi-encoding-fs`），不是 npm 上的 `pi-encoding-fs@0.4.0`。**
+>
+> | | npm `0.4.0` | 本 fork 基线 |
+> |---|---|---|
+> | commit | `162bb04` | `69e4e47`（上游 `main` HEAD） |
+> | 图片保护 | **缺失** —— 读 PNG/JPEG 会走 iconv 转码，**字节被破坏且模型收不到图片附件** | 有（`fix(read): preserve images when overriding Pi read ops` + `detectImageMimeType` hook） |
+> | 读编码判定 | Python 3 + `chardet`（本机 pyenv 未初始化即永久退化为「配置说了算」） | **P1 起改为零依赖确定性字节判定** |
+> | 非 GB 编码 | `resolve.ts` 里非 GB 一律短路成 UTF-8，`ISO-8859-1`/`Big5` 配置被忽略 | **P1 起任意 iconv 编码可用 + `force`** |
+> | 不可映射字符 | 静默写 `0x3F`（生僻字丢失）；UTF-8 BOM 文件按 GB 写出头部变 `?` | **P2 起三道硬闸门：报错 / 回读自校验 / 拿不准就不写** |
+>
+> 因此**不要** `pi install npm:pi-encoding-fs`，请用本仓库（项目级安装，理由见下方 Requirements 与需求文档 §5.1/§5.2）。
+> 改造目标、红线与验收标准见仓库根目录 [`REQ-pi-encoding-fs-fork.md`](./REQ-pi-encoding-fs-fork.md)。
+
 Encoding-aware `read` / `write` / `edit` / `grep` for [Pi](https://github.com/earendil-works).
 Transparently handles GB18030 / GBK / GB2312 files while preserving Pi's native TUI
 (diff view, syntax highlighting, line numbers).
