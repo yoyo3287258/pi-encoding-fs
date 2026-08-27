@@ -78,6 +78,8 @@ const lineEndingOf = (b) => {
 const rows = [];
 const stats = new Map(); // ext -> {kind -> count}, plus eol counters
 const anomalies = { unknown: [], ambiguous: [], utf8InGbTree: [], gb18030Only: [], oversize: [], bom: [] };
+/** 已经被「UTF-8 硬编码工具」毁过的文件：内容里含有 U+FFFD 或它的 GBK 形态「锟斤拷」。 */
+const damaged = [];
 let scanned = 0, skippedBinary = 0;
 
 function bump(ext, key) {
@@ -104,8 +106,20 @@ function bump(ext, key) {
     bump(ext, `eol:${lineEndingOf(b)}`);
     if (c.kind !== "ascii") bump(ext, `eol-nonascii:${lineEndingOf(b)}`);
     scanned++;
+    // 历史损坏检测：按判定出的编码解码后数 U+FFFD（包括 GBK 解出的「锟斤拷」字样）
+    let fffd = 0;
+    if (c.kind !== "binary" && c.kind !== "unknown" && c.kind !== "ascii") {
+      try {
+        const text = c.kind === "utf8" || c.kind === "utf8-bom" ? b.toString("utf-8") : iconv.decode(b, c.enc);
+        fffd = (text.match(/\ufffd/g) || []).length;
+        if (/锟斤拷/.test(text)) fffd = Math.max(fffd, 1);
+      } catch {
+        /* 忽略 */
+      }
+    }
+    if (fffd) damaged.push([path.relative(root, p).replace(/\\/g, "/"), c.kind, fffd]);
     const rel = path.relative(root, p).replace(/\\/g, "/");
-    rows.push({ rel, ext, kind: c.kind, enc: c.enc, pass: c.pass.join("|"), size: st.size, eol: lineEndingOf(b) });
+    rows.push({ rel, ext, kind: c.kind, enc: c.enc, pass: c.pass.join("|"), size: st.size, eol: lineEndingOf(b), fffd });
     if (c.kind === "unknown") anomalies.unknown.push([rel, st.size]);
     if (c.kind === "cjk" && c.pass.length > 1) {
       const only18030 = c.pass.length === 1 && c.pass[0] === "GB18030" ? false : !c.pass.includes("GBK") && c.pass.includes("GB18030");
@@ -161,8 +175,19 @@ console.log(`\nunknown（既非合法 UTF-8，也不能被任何候选无损回�
 anomalies.unknown.slice(0, 15).forEach(([f, sz]) => console.log(`    ${f} (${sz}B)`));
 if (anomalies.oversize.length) console.log(`\noversize(>${maxBytes / 1048576}MB，未判定): ${anomalies.oversize.length}`);
 
+damaged.sort((a, b) => b[2] - a[2]);
+const totalFffd = damaged.reduce((a, d) => a + d[2], 0);
+console.log(`\n❗ 已经被毁的文件（内容里已含 U+FFFD / 「锟斤拷」）：${damaged.length} 个，共 ${totalFffd} 处替换字符`);
+console.log("   这类损坏不可逆，本扩展只能防止新的损坏发生；需要回滚的请查 SVN 历史。");
+damaged.slice(0, listUnknown ? 99999 : 20).forEach(([f, kind, n]) => console.log(`    ${String(n).padStart(4)} 处  [${kind}]  ${f}`));
+if (damaged.length > 20 && !listUnknown) console.log(`    ... 共 ${damaged.length} 个，用 --list-unknown 全列`);
+
 if (outCsv) {
   const esc = (s) => `"${String(s).replace(/"/g, '""')}"`;
-  fs.writeFileSync(outCsv, ["file,ext,kind,chosen,candidates,size,eol", ...rows.map((r) => [esc(r.rel), r.ext, r.kind, r.enc, esc(r.pass), r.size, r.eol].join(","))].join("\n"), "utf-8");
+  fs.writeFileSync(
+    outCsv,
+    ["file,ext,kind,chosen,candidates,size,eol,fffd", ...rows.map((r) => [esc(r.rel), r.ext, r.kind, r.enc, esc(r.pass), r.size, r.eol, r.fffd].join(","))].join("\n"),
+    "utf-8",
+  );
   console.log(`\nCSV 明细已写出: ${outCsv}（${rows.length} 行）`);
 }
