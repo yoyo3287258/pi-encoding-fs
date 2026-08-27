@@ -10,13 +10,19 @@
 # ① 先看清项目里到底混了哪些编码（零依赖、只读、不改文件）
 node tools/scan-encoding.mjs D:/temp/OAWSSMS > encoding-report.csv
 
-# ② 在项目根写一份 .encoding-converter.json（本仓库 examples/ 有现成模板）
-#    —— 参考下面 §3 的 GBK 老 Java Web 配方
+# ② 在项目根放一份 .encoding-converter.json（examples/ 有现成模板，§3 有 GBK 老 Java Web 配方）
 
-# ③ 装扩展并验证
-pi install -l @yoyo3287258/pi-encoding-fs     # 或开发期：npm link + pi 里 /plugin reload
-npx vitest run                                 # 全绿即闸门生效
+# ③ 装扩展（pi 的包源可以是本地路径、git、npm）
+cd /d D:/temp/OAWSSMS
+pi install D:/develop/pi/pi-encoding-fs -l   # -l = 写进项目 .pi/settings.json（可进版本库共享）
+pi install D:/develop/pi/pi-encoding-fs      # 不加 -l = 写进 ~/.pi/agent/settings.json（只影响自己）
+#   推到 GitHub 后可以换成：pi install git:github.com/yoyo3287258/pi-encoding-fs@v0.5.0 -l
+#   改了扩展源码或配置后，在 pi 里执行 /reload 即可生效（首次会问项目 trust → /trust）
 ```
+
+验证安装：在 GBK 文件上让模型改一行中文注释，然后
+`node tools/scan-encoding.mjs <那个目录> | findstr <那个文件名>` 一列应当仍是 `cjk/GBK`（而不是 `utf8`）。
+回归测试：`npx vitest run`（含真实工程影子树，没那个工程会自动跳过）。
 
 **没有配置 = 完全透传**，本扩展对目录不做任何事（§8 A-1 由测试锁死）。所以"先提交一份保守配置"
 比"先不配、等出事再配"安全得多。
