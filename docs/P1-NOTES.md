@@ -83,6 +83,10 @@ pi 的 `edit` 会把 `ops.readFile()` 的文本当**基线内容**写回，所�
 
 ## 目标项目（D:/temp/OAWSSMS）画像与推荐配置
 
+> ⚠️ **本节里的配置已被 P2.1 定稿取代**（当时 `writeEncoding` 写的是 GB18030，且写目标语义还没收紧）。
+> 现行版本：`D:\temp\OAWSSMS\.encoding-converter.json`（已落地）与 `docs/CONFIG-GUIDE.md` §3.1 /
+> `examples/legacy-java-web.jsonc`。画像数据本身仍然有效。下面保留原样是为了记录推理过程。
+
 扫描：`node tools/scan-encoding.mjs D:/temp/OAWSSMS`（7393 个文本文件，5.6s，二进制扩展名跳过）
 
 | 事实 | 数值 |

@@ -11,6 +11,7 @@ import {
   resolveWritePlan,
   ruleFor,
 } from "../src/resolve";
+import { makeReadOperations, makeWriteOperations } from "../src/operations";
 import { clearConfigCache } from "../src/config";
 import { clearClassifyCache } from "../src/encoding/classify";
 import { putConfig } from "./helpers/tree";
@@ -333,14 +334,39 @@ describe("override.encoding 与根 writeEncoding 的优先级（P2 定稿）", (
     const ascii = join(root, "docs", "a.md");
     writeFileSync(ascii, "# ascii only\n");
     expect((await resolveWritePlan(ascii, "# ascii only + 中文\n")).encoding).toBe("UTF-8");
-    // 同目录里真是 GBK 的文件仍按字节判定走（§3.2：已判定出的编码优先，不被目录 override 拉去转码）
+    // 同目录里真是 GBK 的文件：保持 GBK（P2.1 定稿：无改写意图时尊重字节判定），只给警告
     const gbkInDocs = join(root, "docs", "legacy.md");
     writeFileSync(gbkInDocs, iconv.encode("# 旧文档 中文\r\n", "GBK"));
     const p = await resolveWritePlan(gbkInDocs, "x");
-    expect(p.reject, "GBK 字节无法在 UTF-8 下无损回环 → 闸门 3 应拒").toContain("无损");
+    expect(p.reject, "保持原编码写回 → 不该再触发闸门 3").toBeNull();
+    // 目标 = 判定出的编码。这里不是 GBK 而是 GB18030：本测试没设 autoCandidates/sourceEncoding 偏好，
+    // 默认候选链 GB18030 在前且两者都能无损回环（写回字节完全相同）。要 GBK 就把 sourceEncoding 设成 GBK。
+    expect(["GBK", "GB18030"]).toContain(p.encoding);
+    expect(p.warnings.join("\n")).toContain("不转码");
     // 警告里要点名那条 override，让用户知道怎么改
     const r = await ruleFor(gbkInDocs);
     expect(r!.matchedPattern).toBe("docs/**");
+    expect(r!.writeIntent).toBeNull();
+    // 真正的不变量：原样写回必须逐字节相等（这才是"不损坏既有编码"）
+    const before = readFileSync(gbkInDocs);
+    const text = (await makeReadOperations().readFile(gbkInDocs)).toString("utf-8");
+    await makeWriteOperations().writeFile(gbkInDocs, text);
+    expect(readFileSync(gbkInDocs).equals(before)).toBe(true);
+  });
+
+  it("只有显式改写意图（writeEncoding ≠ 读声明）才把已判定文件转写目标编码", async () => {
+    // 收紧方向 GBK→GB18030：超集，逐字节不变 → 放行且真的按 GB18030 写
+    putConfig(root, { sourceEncoding: "GBK", writeEncoding: "GB18030" });
+    const p = join(root, "Up2.java");
+    const gbk = iconv.encode(JAVA_SRC, "GBK");
+    writeFileSync(p, gbk);
+    const plan = await resolveWritePlan(p, JAVA_SRC);
+    expect(plan.encoding).toBe("GB18030");
+    expect(plan.rule!.writeIntent).toBe("GB18030");
+    await makeWriteOperations().writeFile(p, JAVA_SRC);
+    expect(readFileSync(p).equals(gbk)).toBe(true); // P-4：逐字节不变
+    // ASCII 新文件也按 GB18030（writeEncoding 就是它的目标）
+    expect((await resolveWritePlan(join(root, "Fresh2.java"), "class Fresh2{}\r\n")).encoding).toBe("GB18030");
   });
 
   it("根有迁移意图（write≠source）：根 writeEncoding 赢，并给出可读警告", async () => {

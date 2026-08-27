@@ -36,7 +36,7 @@ npx vitest run                                 # 全绿即闸门生效
 | 键 | 默认 | 作用 | 什么时候改 |
 |---|---|---|---|
 | `sourceEncoding` | `GB18030` | 歧义优先级 + ASCII/新文件的写编码（无 `writeEncoding` 时也作写目标） | 项目主编码 |
-| `writeEncoding` | = `sourceEncoding` | 写目标。**不会**把已有文件转码（那是 §7 之外的迁移），只决定新文件/ASCII 文件 | 想"读 GBK、写 GB18030"这种单向收紧时 |
+| `writeEncoding` | = `sourceEncoding` | 写目标。但对**已判定出编码**的文件，只有当它与该作用域的读编码**不同**时才算“明确的改写意图”并生效（见 §2.2） | 想“读 GBK、写 GB18030”这种单向收紧时 |
 | `unmappable` | `error` | 闸门 1 策略：`error` 拒写并列出字符与码点 / `escape` 转 `\uXXXX` / `drop-to-gb18030` 自动升级到 GB18030 并说明 | `.properties` 建议 `escape`（正好等于 native2ascii 约定） |
 | `verifyWrite` | `true` | 闸门 2：写完回读 → 重新判定 → 字节与文本比对 → 不一致就回滚 | 只有为了刷盘性能才关 |
 | `protectUtf8` | `true` | 含非 ASCII 的 UTF-8 文件不会被改写成 GB 系 | **别关**；真要转码请显式 `force` |
@@ -56,6 +56,25 @@ npx vitest run                                 # 全绿即闸门生效
   并且会产出一条 warning 教你怎么用 `"writeEncoding"` 显式锁回来。
 - `force: true` 的三种正当用途：① 单字节编码（ISO-8859-1/windows-1252）；② 字节层原理上无法判定的自定义编码；
   ③ 你确实要把某个 UTF-8 文件转成 GB 系（破坏性，会警告）。
+
+### 2.2 写目标是怎么定出来的（P2 定稿，一张表看完）
+
+核心原则：**默认不改变任何已存在文件的编码**。转码只能由你显式要求。
+所调“显式要求”= 作域内生效的 `writeEncoding` 与该作域的读编码**不同**（字段 `writeIntent`）。
+只照拄默认值（`writeEncoding` 写个跟 `sourceEncoding` 一样的字）不算意图。
+
+| 磁盘现状 | 无改写意图 | 有改写意图（`writeEncoding` ≠ 读编码） |
+|---|---|---|
+| 新建文件 | 作域读声明（`override.encoding` 优先于根） | `writeEncoding` |
+| 纯 ASCII | 同上 | `writeEncoding` |
+| 判定 UTF-8 / UTF-8+BOM | 保持 UTF-8（+ BOM）；`protectUtf8` | 仍保持 UTF-8，除非 `force` / `protectUtf8:false`（会警告） |
+| 判定 GBK / GB18030 / Big5… | **保持判定出的编码**（写回逐字节不变） | 按 `writeEncoding`；目标装不下磁盘字节 → 闸门 3 拒写 |
+| 判定 UTF-16LE/BE | 保持原样（一定补回 BOM） | `force` 才转 |
+| `force` / 单字节声明 | 按声明写 | 按 `writeEncoding` |
+
+为什么这么定：真实工程里一定会碰到“目录声明与实际字节不一致”（声明 UTF-8 的目录里躺着 18 个遗留
+GBK/Latin-1 的 css）。按旧写法（声明就是写目标）这些文件会全部变成“不可编辑”，而不是“按它自己的
+编码写回” —— 后者才是扩展该有的行为。
 
 ## 3. 配方
 
@@ -82,6 +101,11 @@ npx vitest run                                 # 全绿即闸门生效
 `writeEncoding: "GBK"` 保证"配置说的一切"与 Eclipse 现状完全一致，零风险；等团队把 Eclipse 工作空间
 编码改成 GB18030 之后，把这一行改成 `"GB18030"` 即可 —— 性质 P-4（GB18030 是 GBK 严格超集，
 对既有 GBK 字节逐字节不变）保证这次改动不会碰坏任何一个已有文件。
+
+实测细节（为什么目录 override 不会拆台）：`WebContent/MobileSSOA/**` 声明 UTF-8，但里面混着
+18 个遗留的非 UTF-8 文本（`css/*.css`、`salesReport/**/chunk-vendors.*.js` 等，实测统计）。按 §2.2
+的规则，它们**仍按自己判定出的编码写回**（字节不变），只有新建/纯 ASCII 文件才拿 UTF-8 当默认。
+这就是为什么这里可以安心保留目录声明，不用为 18 个文件写 18 条 override。
 
 升级检查清单：
 
@@ -147,7 +171,8 @@ npx vitest run                                 # 全绿即闸门生效
 建议：该 override 的 encoding 改成 GBK；若该文件确实是个例外，删了/改窄那条 override；
 若真要降级转换，在该 pattern 上显式 "force": true。
 ```
-→ 这条基本等于"你的 override 和现实冲突了"。按提示改窄 override。
+→ 只会在你**显式写了与读编码不同的 `writeEncoding`**（或 `force`）时才会遇到；
+  按 §2.2，默认情形下已判定的文件会保持自己的编码，不会触发这条。
 
 ## 5. 团队协作要点
 

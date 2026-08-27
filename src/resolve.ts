@@ -296,8 +296,19 @@ export async function resolveWritePlan(absFilePath: string, content: string): Pr
     };
   }
 
-  // ⑧ cjk / config：写编码由配置决定（允许「读兼容 GBK、写统一 GB18030」）
-  const encoding = targetFromConfig;
+  // ⑧ cjk / config：默认**尊重字节判定出的编码**（不转码、不损坏）；只有配置显式表达了
+  // 改写意图（writeEncoding ≠ 该作用域读声明）时才按 writeEncoding 写。
+  // kind==="config"（force / 单字节不可判定）属于“字节说不了话”，始终按声明写。
+  const detected = verdict.kind === "cjk" && !rule.writeIntent ? verdict.encoding : null;
+  if (detected && normalizeEncoding(detected) !== normalizeEncoding(targetFromConfig)) {
+    warnings.push(
+      `该作用域声明 ${targetFromConfig}${rule.matchedPattern ? `（override "${rule.matchedPattern}"）` : ""}，` +
+        `但此文件按字节判定为 ${detected} → 仍按 ${detected} 写回（不转码）。` +
+        `确实要统一成 ${targetFromConfig}：要么用 tools/scan-encoding.mjs 做一次显式迁移，` +
+        `要么在该 override 上写 "writeEncoding": "${targetFromConfig}" + "force": true。`,
+    );
+  }
+  const encoding = detected ?? targetFromConfig;
   // force 跳过了字节判定 → 补一次「不 force 时的字节判定」，用来履行「必须警告」并正确算 transcoding。
   const byteVerdict: Verdict | null = verdict.kind === "config" && raw ? classifyBuffer(raw, null) : null;
   if (byteVerdict && rule.force) {

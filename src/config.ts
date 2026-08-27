@@ -74,8 +74,12 @@ export interface FoundConfig {
 /** 合并「就近配置 + 最特异 override」之后、针对单个文件的完整决策上下文（§3.1 的 cfg 入参）。 */
 export interface ResolvedConfig {
   configDir: string;
+  /** 该作用域的读声明（歧义优先级 + “字节说不了话”时的默认编码） */
   sourceEncoding: string;
+  /** 新建 / 纯 ASCII / force-undecidable 文件的写目标 */
   writeEncoding: string;
+  /** 用户显式表达的改写意图（writeEncoding ≠ 该作用域读声明）；null = 无，已判定的文件保持原编码 */
+  writeIntent: string | null;
   readStrategy: ReadStrategy;
   unmappable: UnmappableStrategy;
   verifyWrite: boolean;
@@ -355,6 +359,10 @@ export function resolveFileRule(absFilePath: string, found: FoundConfig): Resolv
     warnings.push(`${configDir}: override "${rule.pattern}" 只写了 writeEncoding，读编码沿用 ${sourceEncoding}`);
   }
   const force = rule?.force ?? false;
+  // “明确的改写意图” := 合并后的 writeEncoding 与该作用域的读声明不同。
+  // 相等（包括“只是照拄了默认值”）视为无意图 → 已判定出编码的文件**保持自己的编码**。
+  // 这是“永不损坏既有编码”的一般形式：转码必须是用户显式要求，不能是默认行为的副作用。
+  const writeIntent = normalizeEncoding(writeEncoding) !== normalizeEncoding(sourceEncoding) ? writeEncoding : null;
   if (isGBEncoding(writeEncoding) && isGBEncoding(sourceEncoding) && writeEncoding !== sourceEncoding) {
     // 只对 GB 家族提示这个坑（P-4：GB18030 写既有 GBK 内容逐字节不变，反过来则不成立）
     if (writeEncoding.toUpperCase() === "GBK" && sourceEncoding.toUpperCase() === "GB18030") {
@@ -367,6 +375,7 @@ export function resolveFileRule(absFilePath: string, found: FoundConfig): Resolv
     configDir,
     sourceEncoding,
     writeEncoding,
+    writeIntent,
     readStrategy: rule?.readStrategy ?? config.readStrategy ?? DEFAULTS.readStrategy,
     unmappable: rule?.unmappable ?? config.unmappable ?? DEFAULTS.unmappable,
     verifyWrite: rule?.verifyWrite ?? config.verifyWrite ?? DEFAULTS.verifyWrite,
