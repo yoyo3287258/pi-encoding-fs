@@ -67,3 +67,16 @@ jobs:
             exit 1
           fi
           echo "OK: src/ 零 python 引用"
+
+      # 发布物完整性：pi 加载的是 src/index.ts，package.json 的 files 漏了东西就等于装了个空包。
+      - name: Package contents sanity
+        shell: bash
+        run: |
+          npm pack --dry-run > pack.txt 2>&1 || { cat pack.txt; exit 1; }
+          for f in src/index.ts src/grep.ts src/encoding/classify.ts README.md CHANGELOG.md LICENSE docs/CONFIG-GUIDE.md; do
+            grep -q "$f" pack.txt || { echo "::error::pack 里缺少 $f（检查 package.json files）"; exit 1; }
+          done
+          if grep -q "node_modules/" pack.txt; then
+            echo "::error::pack 里混进了 node_modules"; exit 1
+          fi
+          grep -E "total files|package size" pack.txt

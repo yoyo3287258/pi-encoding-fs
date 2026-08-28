@@ -7,7 +7,9 @@ import { makeReadOperations, makeWriteOperations } from "../../src/operations";
 import { putConfig } from "../../test/helpers/tree";
 import { JAVA_SRC } from "../../test/fixtures/build";
 describe("A-7 延迟", () => {
-  it("read/write 平均延迟（闸门全开）", async () => {
+  // 这本质是性能验收用例（不是延迟基准）：它要造 301 个文件并跑 300 轮「读+改+写」，
+  // 全套并行跑时 5s 默认超时会误报，所以单独给它 60s。
+  it("read/write 平均延迟（闸门全开）", { timeout: 60_000 }, async () => {
     const root = mkdtempSync(join(tmpdir(), "perf-"));
     putConfig(root, { sourceEncoding: "GBK", writeEncoding: "GBK", verifyWrite: true });
     const unit = iconv.encode(JAVA_SRC, "GBK");

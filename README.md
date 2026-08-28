@@ -9,9 +9,14 @@
 > | 读编码判定 | Python 3 + `chardet`（本机 pyenv 未初始化即永久退化为「配置说了算」） | **P1 起改为零依赖确定性字节判定** |
 > | 非 GB 编码 | `resolve.ts` 里非 GB 一律短路成 UTF-8，`ISO-8859-1`/`Big5` 配置被忽略 | **P1 起任意 iconv 编码可用 + `force`** |
 > | 不可映射字符 | 静默写 `0x3F`（生僻字丢失）；UTF-8 BOM 文件按 GB 写出头部变 `?` | **P2 起三道硬闸门：报错 / 回读自校验 / 拿不准就不写** |
+> | 中文 `grep` | 单趟 UTF-8 搜索 —— 在真实 GBK 工程里基本搜不到（实测 `创建时间` 在 **610** 个 GBK java 文件里，单趟只看得到 **2** 个） | **P3 起多趟编码搜索 + 逐文件判定复核** |
+> | 全局副作用 | 无条件覆盖 4 个工具 + 无条件往系统提示里塞话（污染非 GBK 项目） | **无配置树整体委托内置、系统提示零注入（A-1 / A-8）** |
 >
 > 因此**不要** `pi install npm:pi-encoding-fs`，请用本仓库（项目级安装，理由见下方 Requirements 与需求文档 §5.1/§5.2）。
-> 改造目标、红线与验收标准见仓库根目录 [`REQ-pi-encoding-fs-fork.md`](./REQ-pi-encoding-fs-fork.md)。
+> 本 fork 的包名是 `@yoyo3287258/pi-encoding-fs`（`0.5.0`）；尚未发布到 npm，现在只能用本地路径或 git 安装。
+> 改造目标、红线与验收标准见需求文档
+> [`REQ-pi-encoding-fs-fork.md`](https://github.com/yoyo3287258/pi-encoding-fs/blob/main/REQ-pi-encoding-fs-fork.md)
+> （仓库根目录同路径），逐条验收证据见 [docs/ACCEPTANCE.md](./docs/ACCEPTANCE.md)。
 
 Encoding-aware `read` / `write` / `edit` / `grep` for [Pi](https://github.com/earendil-works).
 Transparently handles GB18030 / GBK / GB2312 files while preserving Pi's native TUI
@@ -141,10 +146,111 @@ Known trade-offs of this approach (no upstream change required):
   smart-quote drift) the preview shows just the header, then the real edit runs and
   Pi's `renderResult` replaces it with the actual diff. GB files never get a false red
   error box anymore.
-- The UTF-8 vs GB decision is a **byte-level** probe (`TextDecoder("utf-8",{fatal:true})`
-  throws on GB bytes), mtime-cached. A genuinely single-byte legacy encoding (ISO-8859 /
-  Windows-1252) would be treated as non-UTF-8 and routed through the encoding-aware
-  preview; this is harmless as long as a matching `.encoding-converter.json` exists.
+- The routing decision is made with the **same deterministic classifier** `read` uses
+  (`classifyBuffer`) plus the nearest config, resolved through a synchronous config path that
+  shares the config cache. That matters for single-byte legacy encodings (ISO-8859-1 /
+  Windows-1252): they are undecidable at byte level, so only the config can say what they are —
+  a plain "is it valid UTF-8?" probe would misroute them. The probe is cached by
+  `(mtime, size, config-generation)`, so changing `.encoding-converter.json` re-evaluates even
+  when the file didn't move.
+
+## 三条路线（用户决策，不由实现者替你选）
+
+面对一个“磁盘是 GBK、工具链全是 UTF-8”的项目，有三条路。本仓库只实现 **路线 A**，
+但路线 B/C 是你的决策，不是代理应该擅自做的：
+
+| | 做什么 | 适用 | 代价 / 风险 |
+|---|---|---|---|
+| **A（本扩展）** | 磁盘保持 GBK，编码差异吃在 IO 层 | 构建/部署链不受控（maven/gradle 都没有、Eclipse + Tomcat + SVN 的存量工程） | 零侵入、可回退。副作用：工具链以外的地方（`type`/`cat`）还是乱码，见 P5 |
+| **B** | 整仓迁 UTF-8 | 能掌控构建与部署配置，且能接受一全性验证 | 需同步改：maven `project.build.sourceEncoding`、`maven-compiler-plugin<encoding>`、`maven-resources-plugin<encoding>`、JSP `pageEncoding`、Tomcat `server.xml URIEncoding`、log4j appender `encoding`、`native2ascii` properties、JDBC `characterEncoding`。收益最大、风险最白。**本扩展不做转码/迁移**（§7 Non-Goal） |
+| **C（可叠加的中间态，已实测）** | `.gitattributes` 写 `*.java text working-tree-encoding=GBK`：工作树仍 GBK、git blob 存 UTF-8 → `git diff` / GitHub 浏览 / blame 中文全部正常（实测工作树 `b1ea cce2`，blob `e6a087 e9a298`） | 用 git 且只痛“看不了 diff”的项目 | ① **解决不了 pi 读文件**（agent 读的是工作树 → 路线 A 仍必需）；② `text` 触发 CRLF 归一（实测有 `LF will be replaced by CRLF` 警告），Windows 存量工程需显式 `eol=crlf`；③ 需 `git add --renormalize .` 且团队/CI 一致启用；④ 本机 Git-for-Windows 2.45 无 `checkout --iconv` |
+
+> 本仓库自身的 `.gitattributes` 只声明“仓库内 LF + 二进制文件不走 EOL 转换”，
+> **没**给下游工程写 `working-tree-encoding` —— 那是你仓库的决策，不是依赖应该带来的副作用。
+
+## 先给仓库做一次编码画像
+
+接手一个存量项目时，先看盘子，再写配置（零依赖，纯 Node）：
+
+```bash
+node tools/scan-encoding.mjs D:/path/to/project --out /tmp/profile.csv
+```
+
+输出每个文件的判定结果（`ascii/utf8/utf8-bom/cjk/utf16/binary/config/unknown`）、候选编码、
+行尾风格，以及**已经坏了的文件**（含 `U+FFFD` / 锁定字串如锁斤拷）—— 这些是历史事故现场，
+在改它们之前先确认基线。`--out` 的 CSV 可以直接排。
+
+实测参考（真实 Java Web 工程 665MB / 25079 文件）：`.java` 4380 = 1266 ASCII + 3069 GBK + 45 UTF-8
+（**同一个模块里混着两种编码**），`.jsp` 801 = 49 ASCII + 731 UTF-8 + 21 GBK，28 个文件已损，
+103 个 UTF-8-BOM。这就是为什么“全局一个编码”的假设会毁数据。
+
+可直接改用的配置样本：[`examples/legacy-java-web.jsonc`](./examples)、[`examples/mixed-repo.jsonc`](./examples)、
+[`examples/all-utf8.jsonc`](./examples)。
+
+## AGENTS.md 模板
+
+如果你希望项目里的人/agent 都知道这套规则存在（而不只依赖系统提示），把下面这段贴到
+项目根目录的 `AGENTS.md`（或 `CLAUDE.md`）。它和扩展注入的那段常量同构，但**额外告诉**
+你团队的规则位置，且对不用 pi 的人同样有效：
+
+```markdown
+## 文件编码
+
+- 本仓库用 `pi-encoding-fs` 扩展处理编码。`read`/`write`/`edit`/`grep` 已经按文件转码，
+  **不要**再手动 `iconv`、不要“先转成 UTF-8 再改”、不要改文件编码。
+- 规则在 `.encoding-converter.json`（允许 `//` 注释，注释里写了为什么）。
+- 磁盘上是什么编码就保持什么编码；转码必须显式要求（`writeEncoding` ≠ 读编码，或 `force`）。
+- 工具报错里看到「闸门 1 / 闸门 3」或 `[encoding: UNKNOWN]` → **停下来问人**，不要换策略重试。
+- 不要在 `bash` 里用 `cat`/`type` 读非 UTF-8 源文件（会乱码）；用 `read` 工具。
+```
+
+## FAQ
+
+**问：为什么不干脆把所有文件转成 UTF-8？**
+答：那是迁移，不是工具职责（§7 Non-Goals）。转一次要同时改对 Eclipse 工程编码、`pageEncoding`、
+Tomcat URI 编码、native2ascii、JDBC 参数、以及 SVN 上所有同事的工作副本 —— 错一环就是生产事故。
+详见上面「三条路线」。
+
+**问：我已经有 UTF-8 项目，装它会变慢吗？**
+答：不会变错。没配置 → 完全透传且不注入系统提示（A-1/A-8）。有配置且文件都是 UTF-8 →
+每个文件多一次字节判定（实测新增延迟 0.78～1.27ms，带缓存）。想完全避开就把配置文件删了。
+
+**问：为什么 `grep` 不直接用一个编码？**
+答：GBK 字节不是合法 UTF-8，单趟 UTF-8 搜索在真实 GBK 工程里只会看到零头：实测
+`创建时间` 在 **610** 个 GBK java 文件里，单趟只看到 **2** 个。我们对非 ASCII pattern 跑多趟，
+并用“该文件自己的读解码链”逐个复核，所以既不漏也不假阳性。
+
+**问：报错说闸门 2 不通过，但我确信内容是对的？**
+答：先查是否有其他进程（IDE 插件、格式化工具、索引起、云盘同步）在写同一个文件；闸门 2 比较的是
+**整文件字节**，任何中途改动都会造成不一致并触发回滚（磁盘保持原样）。确认没竞争后，可以用
+`verifyWrite: false` 关掉 —— 但我们**不建议**：这个闸门就是用来拓住“静默丢数据”的。
+
+**问：`.properties` 里的中文怎么算？**
+答：单字节/ASCII-only 的 properties 在字节层不可区分，只能靠配置。推荐
+`{ "pattern": "*.properties", "encoding": "ISO-8859-1", "force": true, "unmappable": "escape" }`
+—— 写出的是 `\uXXXX`，与 Java `Properties.load()` / 老 `native2ascii` 约定兼容。
+
+**问：扩展会把提示文字写进我的文件吗？**
+答：不会。所有闸门/判定提示走 UI 通知和工具结果附注，`ops.readFile` 的字节缓冲区永不追加；
+有用例钉住“escape 成功写之后磁盘字节里不含 `[encoding]`”。
+
+**问：它支持 EBCDIC / ISO-2022-JP 吗？**
+答：不支持（§7）：转义序列编码无法用“逐字节无损回环”安全判定。真需要就给那个目录配
+`force` + 具体编码名，但请注意闸门 3 仍然会拒绝“不保无损”的写。
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/CONFIG-GUIDE.md](./docs/CONFIG-GUIDE.md) | 安装、心理模型、**配置键全参考**、写目标决策表、真实场景配方、错误信息阅读、Eclipse/Tomcat/SVN 团队注意事项、GB18030 升级清单 |
+| [docs/ACCEPTANCE.md](./docs/ACCEPTANCE.md) | §8 A-1…A-9 / §6.2 T-1…T-15 / §6.3 端到端逐条证据与可复现命令 |
+| [docs/P0-BASELINE.md](./docs/P0-BASELINE.md) | fork 基线盘点与开工前的 Python 基线 |
+| [docs/P1-NOTES.md](./docs/P1-NOTES.md) | 确定性字节判定的实现决定与实测证据 |
+| [docs/P1-TEST-MAP.md](./docs/P1-TEST-MAP.md) | 上游 60 用例 → fork 现状的逐条对账（A-2 口径） |
+| [docs/P2-NOTES.md](./docs/P2-NOTES.md) | 三道闸门与写链次序、真实工程影子树端到端证据 |
+| [docs/P3-NOTES.md](./docs/P3-NOTES.md) | grep / 系统提示 / 预览路由 / 并发写，以及真实 `pi` 活体验收记录 |
+| [CHANGELOG.md](./CHANGELOG.md) | fork 与上游的版本历史 |
+| [docs/superpowers-upstream/](./docs/superpowers-upstream) | 上游原始设计/计划文档（保留存档，已改名以免混淆） |
 
 ## License
 

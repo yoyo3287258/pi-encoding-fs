@@ -12,7 +12,7 @@ import {
   ruleFor,
 } from "../src/resolve";
 import { makeReadOperations, makeWriteOperations } from "../src/operations";
-import { clearConfigCache } from "../src/config";
+import { clearConfigCache, findNearestConfig } from "../src/config";
 import { clearClassifyCache } from "../src/encoding/classify";
 import { putConfig } from "./helpers/tree";
 import { JAVA_SRC, JAVA_SRC_UTF8, RARE_SRC } from "./fixtures/build";
@@ -388,5 +388,71 @@ describe("override.encoding 与根 writeEncoding 的优先级（P2 定稿）", (
       overrides: [{ pattern: "docs/**", encoding: "GBK", writeEncoding: "GBK" }],
     });
     expect((await resolveWritePlan(p, "# 新\r\n")).encoding).toBe("GBK");
+  });
+});
+
+describe("T-15 readStrategy:\"config\" —— 强制按配置解（行为可控，不是崩溃）", () => {
+  it("明知是 UTF-8 的文件也被按 GB18030 解；写目标仍由字节判定决定（readStrategy 不影响写侧）", async () => {
+    putConfig(root, { sourceEncoding: "GB18030", readStrategy: "config" });
+    const p = join(root, "forced.txt");
+    writeFileSync(p, "订单服务 =85.5\r\n", "utf-8"); // 磁盘是合法 UTF-8
+    const plan = (await resolveReadPlan(p))!;
+    expect(plan.verdict.kind).toBe("utf8"); // 字节真相不变（verdict 永远是判定结果）
+    expect(plan.kind).toBe("config"); // 但显示层被 readStrategy 压倒
+    expect(plan.encoding).toBe("GB18030"); // 被配置压倒 → 显示乱码，但不报错
+    expect((await makeReadOperations().readFile(p)).toString("utf-8")).not.toBe("订单服务 =85.5\r\n");
+    expect(plan.warnings.join("\n")).toContain("readStrategy");
+
+    const wp = await resolveWritePlan(p, "订单服务 =90.0\r\n");
+    expect(wp.reject).toBeNull();
+    expect(wp.encoding).toBe("UTF-8"); // 写侧仍按判定：不会被这个配置顺手转成 GB18030
+  });
+
+  it("readStrategy 非法值 → 回落 auto 并给出可见 warning（不静默失效）", async () => {
+    writeFileSync(
+      join(root, ".encoding-converter.json"),
+      JSON.stringify({ sourceEncoding: "GBK", readStrategy: "magic" }),
+    );
+    const p = join(root, "x.txt");
+    writeFileSync(p, iconv.encode("订单服务\r\n", "GBK"));
+    const plan = (await resolveReadPlan(p))!;
+    expect(plan.rule.readStrategy).toBe("auto"); // 非法值被纠正
+    expect(plan.warnings.join("\n")).toContain("readStrategy"); // 并且让你看到它被纠正了
+  });
+});
+
+describe("T-14 配置热更新（不手动清缓存也要生效 —— 上游已有，保留）", () => {
+  it("改写 .encoding-converter.json 后，下一次解析就用新配置", async () => {
+    const p = join(root, "legacy.bin");
+    writeFileSync(p, Buffer.from("caf\xe9 na\xefve\r\n", "latin1"));
+    putConfig(root, {
+      sourceEncoding: "UTF-8",
+      overrides: [{ pattern: "*.bin", encoding: "ISO-8859-1", force: true }],
+    });
+    expect((await resolveReadPlan(p))!.encoding).toBe("ISO-8859-1");
+
+    // 同一会话里用户改了配置（不调用 clearConfigCache）
+    putConfig(root, {
+      sourceEncoding: "UTF-8",
+      overrides: [{ pattern: "*.bin", encoding: "windows-1252", force: true }],
+    });
+    const again = (await resolveReadPlan(p))!;
+    expect(again.encoding).toBe("windows-1252");
+    expect(again.verdict.configReason).toBe("force");
+  });
+
+  it("mtime 不变但内容变化（size 变了）也能失效；写目标跟着变", async () => {
+    const p = join(root, "F.java");
+    writeFileSync(p, iconv.encode(JAVA_SRC, "GBK"));
+    putConfig(root, { sourceEncoding: "GBK", writeEncoding: "GBK" });
+    expect((await resolveWritePlan(p, JAVA_SRC.replace("85.5", "90.0"))).encoding).toBe("GBK");
+    putConfig(root, {
+      sourceEncoding: "GBK",
+      writeEncoding: "GBK",
+      overrides: [{ pattern: "*.java", encoding: "GBK", writeEncoding: "GB18030" }],
+    });
+    const wp = await resolveWritePlan(p, JAVA_SRC.replace("85.5", "90.0"));
+    expect(wp.encoding).toBe("GB18030"); // override 的显式迁移意图生效
+    expect(wp.warnings.length + (wp.reject ? 1 : 0)).toBeGreaterThan(0); // 迁移意图必带可见提示
   });
 });

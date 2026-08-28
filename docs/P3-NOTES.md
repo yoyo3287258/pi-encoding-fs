@@ -23,7 +23,7 @@
 | `test/edit-preview.test.ts` | 更新 3 个用例到新语义（无配置 → 透传 → 上游预览天然正确） |
 | `tools/bench-p3.mjs` | 新增。A-7 真实工程延迟 + grep 趟数开销实测 |
 
-验证：`npx tsc --noEmit` 干净；`npx vitest run` → **16 文件 / 199 用例全绿**。
+验证：`npx tsc --noEmit` 干净；`npx vitest run` → **16 文件 / 199 用例全绿**（P4 补 T-14/T-15 用例后为 203）。
 
 ---
 
