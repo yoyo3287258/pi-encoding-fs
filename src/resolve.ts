@@ -42,6 +42,8 @@ export interface ReadPlan {
   rule: ResolvedConfig;
   /** 需要追加到 read 结果尾部的一行警告（null = 不加） */
   note: string | null;
+  /** 非致命提示（P3 走 tool_result 回显 / UI 通知，不进文件内容） */
+  warnings: string[];
 }
 
 export async function resolveReadPlan(absFilePath: string): Promise<ReadPlan | null> {
@@ -56,6 +58,7 @@ export async function resolveReadPlan(absFilePath: string): Promise<ReadPlan | n
       verdict: classifyBuffer(Buffer.alloc(0), rule),
       rule,
       note: null,
+      warnings: [...rule.warnings],
     };
   }
   const verdict = classifyBuffer(raw, {
@@ -98,6 +101,7 @@ export async function resolveReadPlan(absFilePath: string): Promise<ReadPlan | n
     verdict,
     rule,
     note,
+    warnings,
   };
 }
 

@@ -3,9 +3,9 @@
 | 指标 | 数量 |
 |---|---|
 | 上游（main@69e4e47）用例总数 | 60 |
-| fork 现在用例总数（按源码里的 it() 标题静态计数） | 145 |
-| 标题原样保留且通过 | 54 |
-| 未以同名保留（删除/迁移） | 6 |
+| fork 现在用例总数（按源码里的 it() 标题静态计数） | 168 |
+| 标题原样保留且通过 | 46 |
+| 未以同名保留（删除/迁移） | 14 |
 
 ## 未以同名保留的用例与去向
 
@@ -16,6 +16,14 @@
 | converter.test.ts | resolveFileEncoding: config GB falls back when detection weak/non-GB | resolveFileEncoding(chardet 置信度阈值) 函数被删；意图改由 test/classify.test.ts（字节判定链）+ test/resolve.test.ts（配置优先级）覆盖 |
 | detector.test.ts | never throws and returns a DetectionResult shape for a GB file | 整文件删除：Python + chardet 依赖本身被移除（§0.5.5 已预告），2 条 |
 | detector.test.ts | returns confidence 0 for empty file | 整文件删除：Python + chardet 依赖本身被移除（§0.5.5 已预告），2 条 |
+| edit-preview.test.ts | flags GB18030 bytes (incl. GBK-extension 镕) as NOT UTF-8 |  |
+| edit-preview.test.ts | caches by mtime: editing the file invalidates the cache |  |
+| grep.test.ts | finds ASCII pattern in a UTF-8 file (no config → uses default UTF-8 group) |  |
+| grep.test.ts | finds Chinese pattern inside a GB18030 file via nearest config |  |
+| grep.test.ts | searches UTF-8 override dir with utf-8 encoding, GB tree with gb18030 |  |
+| grep.test.ts | excludes node_modules and .git by default |  |
+| grep.test.ts | context lines are included around a match |  |
+| grep.test.ts | returns 'No matches found.' when nothing matches |  |
 | resolve.test.ts | config non-GB override forces UTF-8 (ignores chardet) | 「配置说了算」→ 反转为「字节证据优先，force 才压倒」（§3.1 第 6 步 / §6.2 T-15） |
 
 ## 口径

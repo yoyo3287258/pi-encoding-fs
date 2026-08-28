@@ -24,66 +24,99 @@ The extension registers tools with the same names as Pi's built-ins, overriding 
 encoding conversion only at the byte-IO layer, so Pi keeps computing and rendering diffs in
 UTF-8. `grep` is self-implemented so it can search Chinese text inside GB-encoded files.
 
-Encoding is decided **per file**: the extension walks up from the file's directory to the
-nearest `.encoding-converter.json`. If none is found, it passes through as plain UTF-8
-(identical to not having the extension installed).
+Encoding is decided **per file**, deterministically, with **no dependencies beyond
+`iconv-lite`**: BOM → strict UTF-8 → UTF-16 → valid-but-illegal sequences (CESU-8 /
+modified UTF-8) → legacy CJK candidate scan (GB18030/GBK/GB2312/Big5/EUC-KR, cross-validated
+at byte level) → config. There is no confidence score and no guessing: if the bytes do not
+decide it, the file is reported as `UNKNOWN` and the agent is told to stop and ask you.
 
-The extension also injects a short note into the system prompt so the agent knows the
-built-in tools already handle GB↔UTF-8 transcoding (no need to run `iconv` or re-save
-files), and — when no config exists — how to create a `.encoding-converter.json` itself
-if it ever reads garbled Chinese. The note is constant so prompt caching stays effective.
+The extension walks up from the file's directory to the nearest `.encoding-converter.json`.
+If none applies to the tree, everything passes through byte-for-byte (identical to not having
+the extension installed) and **nothing is injected into the system prompt**.
+
+Three hard gates protect writes: (1) characters the target encoding cannot represent fail
+loudly by default instead of silently becoming `?`; (2) after writing, the bytes are read back
+and verified (full byte equality + re-classification + decoded-text equality), rolling back on
+any mismatch; (3) when the encoding cannot be decided, the file is not written at all. Writes
+to the same path are serialized so a concurrent writer can't be mistaken for a verification
+failure. See [docs/CONFIG-GUIDE.md](./docs/CONFIG-GUIDE.md) and `docs/P*-NOTES.md`.
 
 ## Configuration
 
 Place `.encoding-converter.json` in any directory. It applies to files at or below it,
 unless a deeper config overrides it.
 
-```json
+```jsonc
 {
-  "sourceEncoding": "GB18030",
-  "confidenceThreshold": 0.8,
+  "sourceEncoding": "GBK",        // 读侧兜底编码（字节判不出来时用）
+  "writeEncoding": "GBK",         // 写目标；与 sourceEncoding 不同 = 显式迁移意图
+  "unmappable": "error",          // error | escape | drop-to-gb18030
+  "verifyWrite": true,            // 闸门 2（写后回读自校验）
+  "protectUtf8": true,            // UTF-8 文件不被转码
+  "readStrategy": "auto",         // auto | config
+  "autoCandidates": ["GB18030", "GBK", "GB2312", "Big5"],
   "overrides": [
-    { "pattern": "docs/**", "sourceEncoding": "UTF-8" },
-    { "pattern": "legacy/**", "sourceEncoding": "GBK" }
+    { "pattern": "docs/**", "encoding": "UTF-8" },
+    { "pattern": "*.properties", "encoding": "ISO-8859-1", "force": true, "unmappable": "escape" }
   ]
 }
 ```
 
-- `sourceEncoding`: default encoding when detection is uncertain; also used for new files.
-- `confidenceThreshold`: minimum chardet confidence (0-1) to trust auto-detection.
+Full key reference, decision tables for the write target, recipes (legacy Java web, mixed
+repos, all-UTF-8), Eclipse/Tomcat/SVN team notes and error-message reading:
+**[docs/CONFIG-GUIDE.md](./docs/CONFIG-GUIDE.md)**. The file accepts `//` comments, and
+validation problems are surfaced instead of silently ignored.
+
+- `sourceEncoding`: fallback read encoding when bytes are undecidable; also the write target for new files.
 - `overrides`: glob rules relative to the config file's directory; most specific wins.
+- `confidenceThreshold` is still parsed for backward compatibility but **unused** (the old
+  heuristic scorer is gone).
 
 ## Requirements
 
-- A [Pi](https://github.com/earendil-works) agent (peer dependency; `>=0.80.0`).
-- Encoding detection (for `read`/`write`/`edit`) uses Python 3 + `chardet` when available.
-  If Python is missing, the extension silently falls back to `sourceEncoding` from config.
-- `grep` uses [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) for fast,
-  encoding-aware search. If `rg` is not found on `PATH`, `grep` transparently
-  falls back to Pi's built-in grep (which cannot search inside GB-encoded files).
+- A [Pi](https://github.com/earendil-works) agent (peer dependency; `>=0.84.0`).
+- **No Python, no `chardet`, no other runtime dependency.** Reading and writing need only
+  `iconv-lite` + `micromatch`.
+- `grep` uses [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) — Pi ships one at
+  `~/.pi/agent/bin/rg`, which this extension prefers; otherwise `rg` on `PATH` is used. If no
+  `rg` is found, `grep` delegates to Pi's built-in grep.
 
 ## Install
 
-From npm:
+Project-local (recommended for a legacy tree — the config, the tools and the trust decision
+all stay with the checkout):
 
 ```bash
-pi install npm:pi-encoding-fs
+cd /path/to/legacy-project
+pi install D:/path/to/pi-encoding-fs -l      # from a local clone
+pi install git:github.com/yoyo3287258/pi-encoding-fs -l   # from git
 ```
 
-From git:
-
-```bash
-pi install git:github.com/15wtyuan/pi-encoding-fs
-```
+User-wide (drop `-l`). Then run `/reload` inside Pi (or restart it) to pick up the tools,
+and `/trust` if you want future sessions to skip the project-trust prompt. In non-interactive
+runs (`pi -p`) pass `--approve` to trust project-local files for that run.
 
 ## Notes / limitations
 
 - Only `read` / `write` / `edit` / `grep` are overridden. `bash`, `find`, and `ls` are not
-  touched (e.g. a `cat` inside `bash` won't decode GB files).
-- `grep` shells out to `ripgrep` with `--encoding` per encoding group (derived from the
-  nearest `.encoding-converter.json`), so searching Chinese inside GB18030 files is both
-  correct and fast. It excludes `.git` / `.svn` / `.hg` / `node_modules` by default.
-  Honoring `.gitignore` and aligning match limits with Pi's built-in grep are planned.
+  touched (e.g. a `cat` inside `bash` won't decode GB files). P5 will look at shell output.
+- `grep` shells out to `ripgrep` **once per candidate encoding** (`--encoding` per pass; only
+  for non-ASCII patterns; single-byte encodings are skipped because they cannot be
+  distinguished from UTF-8 at byte level). Every raw hit is then re-checked by decoding the file
+  through the same read chain `read` uses, so mojibake matches are dropped and ASCII matches
+  inside GB files survive. Output format, notice wording and `limit` semantics match Pi's
+  built-in grep; `--hidden` is added (like the built-in) but `.git` / `.svn` / `.hg` /
+  `node_modules` are permanently excluded — in an SVN working copy `.svn/pristine` otherwise
+  yields duplicate ghost matches (measured: 1 real hit vs 2 with the mirror). Where no config
+  applies to the tree, `grep` delegates entirely to the built-in implementation.
+- Writes that need transcoding go through an atomic replace (temp file + `fsync` + `rename`,
+  with backoff retries for transient Windows locks). That **replaces the inode**, so hard links
+  and open handles pointing at the old inode won't see the update; the file's own directory is
+  always the temp location. Writes in trees with no config use Pi's plain write path so inode
+  semantics there stay untouched.
+- Concurrent writes to the same path are serialized per path. Verification compares the whole
+  file, so an external process writing the same file mid-transaction is detected as a mismatch
+  and rolled back rather than silently mixed.
 
 ### `edit` preview for GB-encoded files
 

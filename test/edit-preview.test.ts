@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import iconv from "iconv-lite";
@@ -19,11 +19,34 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "preview-"));
 });
 
-describe("isUtf8FileCached — synchronous UTF-8 validity probe", () => {
-  it("flags GB18030 bytes (incl. GBK-extension 镕) as NOT UTF-8", () => {
+describe("isUtf8FileCached — 同步预览路由（P3：改为复用 classifyBuffer + 配置）", () => {
+  it("无配置目录 → true（透传：上游预览与我们的解码本来就是同一份字节）", () => {
+    const f = join(root, "gb.py");
+    writeFileSync(f, iconv.encode("# 旧的注释\n朱镕基\n", "GB18030"));
+    expect(isUtf8FileCached(f)).toBe(true); // §8 A-1：无配置时行为必须与未装扩展一致
+  });
+
+  it("有配置时：GB18030 字节（含 GBK 扩展区 镕）→ false，走我们的预览渲染", () => {
+    writeFileSync(join(root, ".encoding-converter.json"), JSON.stringify({ sourceEncoding: "GB18030" }));
     const f = join(root, "gb.py");
     writeFileSync(f, iconv.encode("# 旧的注释\n朱镕基\n", "GB18030"));
     expect(isUtf8FileCached(f)).toBe(false);
+  });
+
+  it("§5.3 修正点：单字节编码按配置路由（旧的 TextDecoder 二分法做不到）", () => {
+    writeFileSync(
+      join(root, ".encoding-converter.json"),
+      JSON.stringify({
+        sourceEncoding: "UTF-8",
+        overrides: [{ pattern: "*.txt", encoding: "ISO-8859-1", force: true }],
+      }),
+    );
+    const latin = join(root, "legacy.txt");
+    writeFileSync(latin, Buffer.from("caf\u00e9 na\u00efve \u00fcber\n", "latin1"));
+    expect(isUtf8FileCached(latin)).toBe(false); // 我们的预览会按 ISO-8859-1 解出正确文本
+    const outside = join(root, "other.md"); // 不匹配 override → 仍走 UTF-8 直读
+    writeFileSync(outside, "caf\u00e9 na\u00efve\n", "utf-8");
+    expect(isUtf8FileCached(outside)).toBe(true);
   });
 
   it("accepts UTF-8 with Chinese, ASCII-only, and UTF-8 with BOM", () => {
@@ -40,13 +63,18 @@ describe("isUtf8FileCached — synchronous UTF-8 validity probe", () => {
     expect(isUtf8FileCached(c)).toBe(true);
   });
 
-  it("caches by mtime: editing the file invalidates the cache", () => {
+  it("caches by mtime + 配置代数：文件改了或配置改了都要重新评估", () => {
+    writeFileSync(join(root, ".encoding-converter.json"), JSON.stringify({ sourceEncoding: "GB18030" }));
     const f = join(root, "cache.txt");
     writeFileSync(f, "hello\n", "utf-8");
     expect(isUtf8FileCached(f)).toBe(true);
     // Overwrite with GB bytes (mtime changes) -> cache should re-evaluate.
     writeFileSync(f, iconv.encode("你好\n", "GB18030"));
     expect(isUtf8FileCached(f)).toBe(false);
+    // 删掉配置（透传接管）→ 即使 mtime 未变也必须重新评估
+    rmSync(join(root, ".encoding-converter.json"));
+    clearConfigCache();
+    expect(isUtf8FileCached(f)).toBe(true);
   });
 
   it("defaults to true (upstream renderer) when the file does not exist yet", () => {

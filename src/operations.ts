@@ -25,6 +25,7 @@ import {
 } from "./encoding/converter";
 import { classifyBuffer, describeVerdict, invalidateClassifyCache } from "./encoding/classify";
 import { detectLineEnding, restoreLineEndings, type LineEndingStyle } from "./encoding/line-endings";
+import { pushEncodingNote } from "./notify";
 import {
   detectSupportedImageMimeType,
   detectSupportedImageMimeTypeFromFile,
@@ -44,6 +45,8 @@ async function readAsUtf8Buffer(absPath: string): Promise<Buffer> {
 
   const plan = await resolveReadPlan(absPath);
   if (!plan) return raw; // 无配置 → 逐字节透传（§8 A-1）
+  // 非致命提示不进文件内容（会被 edit 当基线写回），只寄存给 P3 的 tool_result 回显
+  for (const w of plan.warnings) pushEncodingNote(absPath, w);
   if (plan.verdict.kind === "binary") return raw; // 不转码；pi 自己的二进制分支处理
   if (plan.encoding === "UTF-8" || plan.encoding === "BINARY" || plan.encoding === "UNKNOWN") {
     // 原样返回字节（含 BOM —— pi 的 splitBom 会自行处理，我们先剥会导致写回时 BOM 丢失）
@@ -203,8 +206,18 @@ export interface WriteSeam {
 export const defaultWriteSeam: WriteSeam = { writeBytes: atomicReplace };
 
 async function writeEncoded(absPath: string, utf8content: string, seam: WriteSeam = defaultWriteSeam): Promise<void> {
+  // 同一个文件的写必须串行（备份 → 落盘 → 回读校验 → 必要时回滚是一个整体事务）
+  await withPathLock(absPath, () => writeEncodedLocked(absPath, utf8content, seam));
+}
+
+async function writeEncodedLocked(
+  absPath: string,
+  utf8content: string,
+  seam: WriteSeam,
+): Promise<void> {
   const plan = await resolveWritePlan(absPath, utf8content);
   if (plan.reject) throw new Error(plan.reject); // 闸门 3：拿不准就不写
+  for (const w of plan.warnings) pushEncodingNote(absPath, w);
 
   if (!plan.encoding) {
     // 完全透传：用与 pi 内置一致的 writeFile（不提前新建 inode、不改换文件）→
@@ -216,6 +229,7 @@ async function writeEncoded(absPath: string, utf8content: string, seam: WriteSea
 
   // 闸门 1：不可映射字符（可能升级编码或改写文本，因此必须在编码之前做）
   const g1 = applyGate1(plan, utf8content, absPath);
+  if (g1.note) pushEncodingNote(absPath, g1.note);
   const { bytes, text, bomLen } = await encodeForWrite(plan, g1.encoding, g1.text, absPath);
 
   // 闸门 2：写前备份 + 原子替换 + 写后回读自校验，不一致就回滚
@@ -284,7 +298,18 @@ export function makeEditOperations(seam: WriteSeam = defaultWriteSeam): EditOper
   };
 }
 
-// 同目录临时文件 + fsync + rename 的原子替换（闸门 2 的基础）。
+// 同目录临时文件 + fsync + rename 的原子替换（闸门 2 的基础），带 Windows 重试。
+/** rename 在 Windows 上会因瞬时占用（索引起/杀软/另一个句柄正在读）报 EPERM/EACCES/EBUSY */
+const RENAME_RETRY_MS = [0, 8, 16, 32, 64, 128];
+
+function isTransientLockError(e: unknown): boolean {
+  const code = (e as { code?: string })?.code ?? "";
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY" || code === "ENOTEMPTY" || code === "EDELET";
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** 同目录临时文件 + fsync + rename 的原子替换（闸门 2 的基础），带 Windows 重试 */
 export async function atomicReplace(absPath: string, bytes: Buffer): Promise<void> {
   const tmp = `${absPath}.${randomBytes(6).toString("hex")}.encfs.tmp`;
   const fh = await open(tmp, "w");
@@ -294,10 +319,45 @@ export async function atomicReplace(absPath: string, bytes: Buffer): Promise<voi
   } finally {
     await fh.close();
   }
+  for (let i = 0; ; i++) {
+    try {
+      await rename(tmp, absPath);
+      return;
+    } catch (e) {
+      // rename 失败时 tmp 仍在原地 → 清理后按退避重试；重试用尽才向上报错
+      await unlink(tmp).catch(() => undefined);
+      if (i >= RENAME_RETRY_MS.length - 1 || !isTransientLockError(e)) throw e;
+      await sleep(RENAME_RETRY_MS[i]);
+      // 重试要重新生成临时文件（上一份已删）
+      const again = await open(tmp, "w");
+      try {
+        await again.writeFile(bytes);
+        await again.sync();
+      } finally {
+        await again.close();
+      }
+    }
+  }
+}
+
+// 同一文件的写必须串行：否则 A 的“写后回读自校验”会读到 B 刚写的内容，
+// 把好的结果误判成不一致并回滚掉 B 的写入（丢失更新）。
+// 这也是上面 EPERM 的根因：同进程内并发 rename 到同一个目标在 Windows 上必打架。
+const pathLocks = new Map<string, Promise<void>>();
+
+/** 按绝对路径串行化一段异步操作（大小写不敏感，Windows/macOS 需要） */
+export async function withPathLock<T>(absPath: string, fn: () => Promise<T>): Promise<T> {
+  const k = path.resolve(absPath).toLowerCase();
+  const tail = pathLocks.get(k) ?? Promise.resolve();
+  const run = tail.then(fn, fn);
+  const guard = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  pathLocks.set(k, guard);
   try {
-    await rename(tmp, absPath);
-  } catch (e) {
-    await unlink(tmp).catch(() => undefined);
-    throw e;
+    return await run;
+  } finally {
+    if (pathLocks.get(k) === guard) pathLocks.delete(k);
   }
 }

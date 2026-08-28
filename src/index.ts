@@ -1,4 +1,5 @@
 // src/index.ts
+import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   createReadToolDefinition,
@@ -9,14 +10,10 @@ import { makeReadOperations, makeWriteOperations, makeEditOperations } from "./o
 import { createEncodingGrepDefinition } from "./grep";
 import { wrapEditToolWithEncodingPreview, clearUtf8Cache } from "./edit-preview";
 import { clearConfigCache } from "./config";
+import { systemNoteFor } from "./sysnote";
+import { clearEncodingNotes, drainEncodingNotes, notesToSuffix } from "./notify";
 
-// Always-on note (~90 tokens). Kept short so it doesn't dilute the LLM's
-// attention; cached after the first turn so marginal cost is near zero.
-// Covers both cases in one constant: when a config exists (don't manually
-// re-encode / corrupts on-disk) and when one doesn't (create it on garbled
-// Chinese). No runtime branch -> stable prompt prefix, cache-friendly.
-const ENCODING_NOTE = `Note: \`read\`/\`write\`/\`edit\`/\`grep\` auto-transcode GB18030/GBK ↔ UTF-8 where a \`.encoding-converter.json\` exists (nearest wins; deeper overrides). Don't \`iconv\` or re-save as UTF-8 — that corrupts on-disk encoding. If \`read\` shows garbled Chinese, create/edit \`.encoding-converter.json\`:
-{"sourceEncoding":"GB18030","overrides":[{"pattern":"legacy/**","sourceEncoding":"GBK"}]}`;
+type AnyText = { type: "text"; text: string };
 
 export default function (pi: ExtensionAPI) {
   const cwd = process.cwd();
@@ -35,29 +32,58 @@ export default function (pi: ExtensionAPI) {
   // "Could not find the exact text" box during streaming — even though the
   // real edit succeeds. `computeEditsDiff` is not exported and accepts no
   // readFile override, so we wrap the ToolDefinition's `renderCall` to run an
-  // encoding-aware preview for non-UTF-8 files and delegate to the upstream
+  // encoding-aware preview for GB-encoded files and delegate to the upstream
   // renderer for UTF-8 files (zero UX loss). See src/edit-preview.ts.
   const editDef = createEditToolDefinition(cwd, { operations: makeEditOperations() });
   pi.registerTool(wrapEditToolWithEncodingPreview(editDef, makeEditOperations(), cwd));
 
-  // grep: self-implemented (built-in GrepOperations cannot search GB content).
+  // grep: 有配置的目录树里用自实现（多趟编码 + 逐文件判定）；无配置整体委托内置（§5.1）。
   pi.registerTool(createEncodingGrepDefinition(cwd));
 
-  // Config is cached per-directory; clear on session start and reload.
+  // Caches: config dir cache + classify cache + UTF-8 preview cache + pending notes.
   pi.on("session_start", async () => {
     clearConfigCache();
     clearUtf8Cache();
+    clearEncodingNotes();
   });
   pi.on("resources_discover", async (event) => {
     if (event.reason === "reload") {
       clearConfigCache();
       clearUtf8Cache();
+      clearEncodingNotes();
     }
   });
 
-  // Always append the encoding note. Constant content keeps the prompt prefix
-  // stable, so prompt caching stays effective across turns.
+  // §5.2：条件式系统提示。**只有当前 cwd 树里存在 .encoding-converter.json 时才注入**，
+  // 无配置目录一个字都不加（A-8）；有配置时内容是常量，prompt cache 前缀仍然稳定。
+  let notePromise: Promise<string | null> | null = null;
+  const noteOnce = () => {
+    if (!notePromise) notePromise = systemNoteFor(cwd);
+    return notePromise;
+  };
   pi.on("before_agent_start", async (event) => {
-    return { systemPrompt: event.systemPrompt + "\n\n" + ENCODING_NOTE };
+    const note = await noteOnce();
+    if (!note) return undefined; // 无配置 → 零注入
+    return { systemPrompt: event.systemPrompt + "\n\n" + note };
+  });
+
+  // 闸门/判定的回显：operations 只寄存提示（见 src/notify.ts 的原因说明），在这里
+  // 才贴到工具结果上 —— 磁盘永远看不到这些文字。
+  pi.on("tool_result", async (event, ctx) => {
+    const name = event.toolName;
+    if (name !== "read" && name !== "edit" && name !== "write") return undefined;
+    const input = (event.input ?? {}) as Record<string, unknown>;
+    const rel = typeof input.path === "string" ? input.path : typeof input.file_path === "string" ? input.file_path : null;
+    if (!rel) return undefined;
+    const abs = path.isAbsolute(rel) ? rel : path.resolve(cwd, rel);
+    const notes = drainEncodingNotes(abs);
+    if (notes.length === 0) return undefined;
+    for (const n of notes) ctx.ui?.notify?.(n, "info");
+    // isError 的结果（闸门拒绝 = 异常文本已含全部信息）不再追加
+    if (event.isError) return undefined;
+    const suffix = notesToSuffix(notes);
+    if (!suffix) return undefined;
+    const content = (event.content ?? []) as (AnyText | { type: "image"; data: string; mimeType: string })[];
+    return { content: [...content, { type: "text", text: suffix }] };
   });
 }

@@ -30,6 +30,8 @@
 
 import { readFileSync, statSync } from "node:fs";
 import * as path from "node:path";
+import { configGeneration, findNearestConfigSync, resolveFileRule } from "./config";
+import { classifyBuffer } from "./encoding/classify";
 import type { Component } from "@earendil-works/pi-tui";
 import { Box, Text, Spacer } from "@earendil-works/pi-tui";
 import {
@@ -123,55 +125,66 @@ function applyEditsExact(normalizedContent: string, edits: EditEdit[], filePath:
   return { baseContent: normalizedContent, newContent };
 }
 
-// --- mtime-cached, synchronous UTF-8 validity probe -----------------------------------------
-// renderCall() is synchronous, so we cannot await the async encoding resolution in
-// src/resolve.ts. Instead we use the byte-level fact that GB18030/GBK streams are NOT
-// valid UTF-8: TextDecoder(fatal) throws on them. This needs no config and no external
-// probe — it is a pure byte check, and it is exactly step 6 of the deterministic chain
-// in src/encoding/classify.ts. mtime-cached so the per-keystream renderCall cost stays
-// ~free on already-known files. (P3: reuse classifyBuffer here so single-byte legacy
-// encodings are routed by config instead of being treated as generic non-UTF-8.)
+// --- mtime-cached 同步预览路由判定（§5.3）------------------------------------------------
+// renderCall() 是同步的，只能用同步链路。以前这里是一段
+// `new TextDecoder("utf-8", { fatal: true })` 的二分判定 —— 它只能区分“是不是合法 UTF-8”，
+// 于是 ISO-8859-1 / windows-1252 这类“字节层不可判定、只能靠配置”的文件会被当成
+// 普通非 UTF-8 误路由（P3 要求：这里必须复用 classifyBuffer）。
+// 现在：读字节 → 取就近配置（同步版，共用 dirCache）→ classifyBuffer → 问“我们的解码链
+// 与上游预览（utf-8 直读）会不会不一样”，不一样才走我们的预览渲染。
 
 interface CacheEntry {
   mtimeMs: number;
-  isUtf8: boolean;
+  gen: number;
+  upstreamPreviewIsSafe: boolean;
 }
 const utf8Cache = new Map<string, CacheEntry>();
 
-/** True if the file's bytes are valid UTF-8 (so the upstream preview is safe). */
+/** true = 上游 utf-8 直读的预览与真实内容一致，交给内置渲染器（零 UX 损失） */
 export function isUtf8FileCached(absPath: string): boolean {
   let st: { mtimeMs: number };
-  let buf: Buffer;
   try {
-    // stat-mtime check first so repeated renders of the same file avoid re-reading.
     st = statSync(absPath);
   } catch {
-    // Cannot stat (e.g. new file not written yet, or path is a fresh edit target).
-    // Be permissive: assume UTF-8 so the upstream renderer handles it (it will
-    // show the file-missing case uniformly for UTF-8 and GB).
+    // 无法 stat（新文件/路径不存在）→ 宽松处理：交给上游，它对“文件缺失”的提示更统一
     return true;
   }
+  const gen = configGeneration();
   const cached = utf8Cache.get(absPath);
-  if (cached && cached.mtimeMs === st.mtimeMs) return cached.isUtf8;
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.gen === gen) return cached.upstreamPreviewIsSafe;
+  let buf: Buffer;
   try {
     buf = readFileSync(absPath);
   } catch {
     return true;
   }
-  const sample = buf.subarray(0, 65536); // 64 KiB is enough to detect any GB multi-byte sequence
-  let isUtf8 = true;
-  try {
-    new TextDecoder("utf-8", { fatal: true }).decode(sample);
-  } catch {
-    isUtf8 = false;
+  const found = findNearestConfigSync(path.dirname(absPath));
+  if (!found) {
+    // 无配置 → 完全透传，与未装扩展一致（A-1）：上游预览天然是对的
+    utf8Cache.set(absPath, { mtimeMs: st.mtimeMs, gen, upstreamPreviewIsSafe: true });
+    return true;
   }
-  utf8Cache.set(absPath, { mtimeMs: st.mtimeMs, isUtf8 });
+  const rule = resolveFileRule(absPath, found);
+  const v = classifyBuffer(buf, {
+    sourceEncoding: rule.sourceEncoding,
+    autoCandidates: rule.autoCandidates,
+    force: rule.force,
+  });
+  // utf8 / utf8-bom / ascii → 与 utf-8 直读等价；binary / unknown → 我们的解码也帮不上；
+  // cjk / config(非 UTF-8) / utf16 → 必须走我们的预览（否则 GB 文件会渲染乱码 diff）
+  const safe =
+    v.kind === "utf8" || v.kind === "utf8-bom" || v.kind === "ascii" || v.kind === "binary" || v.kind === "unknown";
+  utf8Cache.set(absPath, { mtimeMs: st.mtimeMs, gen, upstreamPreviewIsSafe: safe });
   if (utf8Cache.size > 512) {
-    // Bound memory: drop an arbitrary entry (LRU not worth it for a 512 cap).
     const firstKey = utf8Cache.keys().next().value;
     if (firstKey) utf8Cache.delete(firstKey);
   }
-  return isUtf8;
+  return safe;
+}
+
+/** 旧名字保留（语义已换）：现在等价于 !isUtf8FileCached(path) */
+export function needsEncodingPreview(absPath: string): boolean {
+  return !isUtf8FileCached(absPath);
 }
 
 export function clearUtf8Cache(): void {

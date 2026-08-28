@@ -8,6 +8,7 @@
 //  * 允许 `.encoding-converter.json` 写注释（§4 的示例本身就是 jsonc）。
 //  * 校验失败不再静默丢弃：错误与可疑配置会挂在 `FoundConfig.warnings` 上，
 //    由 read 结果输出一行提示（把「以为生效其实没生效」变成可见信息）。
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
 import micromatch from "micromatch";
@@ -116,8 +117,73 @@ const DEFAULTS: ConfigDefaults = {
 // dir -> 已检查（可能为 null = 这层没有配置）
 const dirCache = new Map<string, CacheEntry | null>();
 
+/** 缓存代数：clearConfigCache() 时 +1，给同步缓存（edit 预览）做失效依据 */
+let _configGen = 0;
+
+export function configGeneration(): number {
+  return _configGen;
+}
+
 export function clearConfigCache(): void {
   dirCache.clear();
+  _configGen++;
+}
+
+/**
+ * loadConfigInDir 的同步版（同一个 dirCache）。给 `edit` 的 renderCall 用 ——
+ * pi 的渲染链路是同步的，拿不到 async 配置解析（§5.3）。
+ */
+function loadConfigInDirSync(dir: string): CacheEntry | null {
+  const cached = dirCache.get(dir);
+  const p = path.join(dir, CONFIG_FILENAME);
+  let st;
+  try {
+    st = statSync(p);
+  } catch {
+    dirCache.set(dir, null);
+    return null;
+  }
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached;
+  let text: string;
+  try {
+    text = readFileSync(p, "utf-8");
+  } catch {
+    dirCache.set(dir, null);
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonComments(text));
+  } catch (e) {
+    const entry: CacheEntry = {
+      config: { ...DEFAULTS },
+      warnings: [`${p} 不是合法 JSON（${(e as Error).message}）；本次按默认值处理，请修正该文件`],
+      mtimeMs: st.mtimeMs,
+      size: st.size,
+    };
+    dirCache.set(dir, entry);
+    return entry;
+  }
+  const { config, warnings } = validateConfig((parsed ?? {}) as Record<string, unknown>, p);
+  const entry: CacheEntry = { config, warnings, mtimeMs: st.mtimeMs, size: st.size };
+  dirCache.set(dir, entry);
+  return entry;
+}
+
+/** findNearestConfig 的同步版（共用 dirCache） */
+export function findNearestConfigSync(startDir: string): FoundConfig | null {
+  let cur = path.resolve(startDir);
+  const warnings: string[] = [];
+  while (true) {
+    const entry = loadConfigInDirSync(cur);
+    if (entry) {
+      if (entry.warnings.length) warnings.push(...entry.warnings);
+      return { config: entry.config, configDir: cur, warnings };
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
 }
 
 /** 容忍 `//` 行注释与 `/* *\/` 块注释（不吞字符串字面量里的内容）。 */
