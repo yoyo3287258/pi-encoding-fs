@@ -179,12 +179,13 @@ describe("配置开关（默认关闭）", () => {
     expect(normalizeBashMode("off", "x", w)).toBe(false);
     expect(normalizeBashMode(true, "x", w)).toBe("auto");
     expect(normalizeBashMode("auto", "x", w)).toBe("auto");
+    expect(normalizeBashMode("true", "x", w)).toBe("auto"); // 字符串 "true" 不是编码名 → 退 auto 并给 warning
     expect(normalizeBashMode("gbk", "x", w)).toBe("GBK");
     expect(normalizeBashMode("UTF-8", "x", w)).toBe(false); // 目标就是 UTF-8 = 不开
     expect(normalizeBashMode("ISO-2022-JP", "x", w)).toBe("auto"); // 转义序列编码不能当兜底
     expect(normalizeBashMode("NOPE-99", "x", w)).toBe("auto");
     expect(normalizeBashMode(123, "x", w)).toBe(false);
-    expect(w.length).toBeGreaterThanOrEqual(4); // 每个纠正都留了可见 warning
+    expect(w.length).toBeGreaterThanOrEqual(5); // 每个纠正都留了可见 warning
   });
 
   it("shellRuleFor：无配置 / transcodeBash=false → null（连覆盖都不做，A-1）", () => {

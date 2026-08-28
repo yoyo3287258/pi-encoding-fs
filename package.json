@@ -49,6 +49,7 @@
     "fixtures": "node test/fixtures/gen.ts",
     "scan": "node tools/scan-encoding.mjs",
     "bench": "node tools/bench-p3.mjs",
+    "bench:p5": "node tools/bench-p5.mjs",
     "prepublishOnly": "npm run verify"
   },
   "peerDependencies": {

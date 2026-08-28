@@ -129,6 +129,24 @@ bash: { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: setti
 原始事件流：`%TEMP%\e2e-p5-off2.json`、`e2e-p5-on.json`、`e2e-p5-fix.json`。
 `cat -v` 那条还顺手给出字节级证据：GBK 的"创"= `B4 B4`（`M-4M-4`）✓。
 
+## 6.5 性能实测（回答“开了会不会拖慢”）
+
+命令：`node tools/bench-p5.mjs`（已进 package.json 的 `npm run bench:p5`）。本机 Windows / Node 24：
+
+| 输出 | 纯转码器 | 真实命令端到端（基线 → 开启） |
+|---|---|---|
+| 1KB / 64KB GBK | 1.1ms / 1.6ms | 小命令的增量落在 spawn 噪声里（±20ms） |
+| 5MB GBK（真转码） | 60ms（≈12ms/MB） | 126ms → 173ms（**+47ms**） |
+| 5MB UTF-8 | 0.2ms | 108ms → 106ms（**噪声级 0**） |
+| 5MB 二进制 | 0.1ms | 109ms → 125ms（噪声级） |
+
+要点：
+- 判定只看**前 64KB**，判成 UTF-8/二进制后逐块原样交还 → **最常见的情况增量真的是 0**；
+- 只有\"真在转 GBK 大输出\"才有 ~12ms/MB，且加在命令本身的几十～几千毫秒之上；
+- 真正需要知道的代价不是 CPU，是 **GBK→UTF-8 体积涨约 38%**（5.00MB→6.91MB）
+  → 进上下文的字节变多；但 pi 的 bash 结果本来就截断到最后 2000 行 / 50KB，影响可忽略；
+- 内存：决策前最多扣 64KB，不是整个输出。
+
 ## 7. 明确不做 / 限制
 
 - **不做输入侧**（把模型写的 UTF-8 转成 GBK 再喂给命令）：`echo 中文 > f.txt` 这类
