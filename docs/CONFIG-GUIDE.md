@@ -4,28 +4,39 @@
 
 ---
 
-## 0. 三步上手
+## 0. 四步上手
 
 ```bash
-# ① 先看清项目里到底混了哪些编码（零依赖、只读、不改文件）
-node tools/scan-encoding.mjs D:/temp/OAWSSMS > encoding-report.csv
+# ① 先看清项目里到底混了哪些编码（只读、不改任何文件；零运行时依赖，不需要 Python）
+node tools/scan-encoding.mjs D:/path/to/project                 # 人看的画像
+node tools/scan-encoding.mjs D:/path/to/project --out report.csv # 机读的明细（含每个文件的候选链）
 
-# ② 在项目根放一份 .encoding-converter.json（examples/ 有现成模板，§3 有 GBK 老 Java Web 配方）
+# ② 一键生成配置（依据优先级：工程声明 > 字节事实 > 最窄覆盖）
+node tools/scan-encoding.mjs D:/path/to/project --init --dry-run  # 只看建议、不写盘
+node tools/scan-encoding.mjs D:/path/to/project --init            # 真写；已有配置会**拒绝覆盖**（退出码 1）
+#   --force 才覆盖。它会去读 Eclipse 的 .settings/org.eclipse.core.resources.prefs、
+#   pom.xml 的 project.build.sourceEncoding、gradle encoding、.editorconfig、.gitattributes，
+#   把逐路径声明搬成 overrides；与字节事实矛盾的声明（比如声明 GBK 但范围内 98% 文件是 UTF-8）
+#   **不采纳**，只报给你看。推不出根编码时取“能覆盖全部观测字节的最窄编码”而不是 GB18030 超集。
 
-# ③ 装扩展（pi 的包源可以是本地路径、git、npm）
-cd /d D:/temp/OAWSSMS
+# ③ 装扩展（完整安装说明、离线/内网装法、报错对照见 docs/INSTALL.md）
+cd D:\path\to\project
 pi install D:/develop/pi/pi-encoding-fs -l   # -l = 写进项目 .pi/settings.json（可进版本库共享）
 pi install D:/develop/pi/pi-encoding-fs      # 不加 -l = 写进 ~/.pi/agent/settings.json（只影响自己）
+#   ⚠️ 本地路径安装**不会**帮你 npm install（git 源才会）→ 先在包目录跑 npm install --omit=dev
 #   推到 GitHub 后可以换成：pi install git:github.com/yoyo3287258/pi-encoding-fs@v0.5.0 -l
-#   改了扩展源码或配置后，在 pi 里执行 /reload 即可生效（首次会问项目 trust → /trust）
+
+# ④ 重启 pi（不是 /reload：bash/powershell 工具覆盖在启动时注册；普通配置改动才不需要重启）
 ```
 
 验证安装：在 GBK 文件上让模型改一行中文注释，然后
 `node tools/scan-encoding.mjs <那个目录> | findstr <那个文件名>` 一列应当仍是 `cjk/GBK`（而不是 `utf8`）。
 回归测试：`npx vitest run`（含真实工程影子树，没那个工程会自动跳过）。
 
-**没有配置 = 完全透传**，本扩展对目录不做任何事（§8 A-1 由测试锁死）。所以"先提交一份保守配置"
-比"先不配、等出事再配"安全得多。
+**没有配置 = 几乎完全透传**（§8 A-1 由测试锁死）。这里有个**真实的坑**要说清：
+pi 内置 `read` 用的是 `buffer.toString("utf-8")`，**有损且不报错** —— 没写配置就去读 GBK 文件，
+模型拿到的是 `????????` / U+FFFD，而不是错误。实测模型会拿着乱码自己“补”出通顺中文并声称
+是原样引用。所以② 那一步**不是可选的**。
 
 ## 1. 三个心智模型（先记住这三条，配置就不会写错）
 

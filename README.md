@@ -90,18 +90,39 @@ validation problems are surfaced instead of silently ignored.
 
 ## Install
 
+Full walkthrough (offline / intranet machine, error-message table, self-check) is
+**[docs/INSTALL.md](./docs/INSTALL.md)** — everything below was run, not inferred.
+
 Project-local (recommended for a legacy tree — the config, the tools and the trust decision
 all stay with the checkout):
 
 ```bash
 cd /path/to/legacy-project
-pi install D:/path/to/pi-encoding-fs -l      # from a local clone
-pi install git:github.com/yoyo3287258/pi-encoding-fs -l   # from git
+pi install D:/path/to/pi-encoding-fs -l                # from a local clone
+pi install git:github.com/yoyo3287258/pi-encoding-fs@v0.5.0 -l   # from git (pin the ref!)
 ```
 
-User-wide (drop `-l`). Then run `/reload` inside Pi (or restart it) to pick up the tools,
-and `/trust` if you want future sessions to skip the project-trust prompt. In non-interactive
-runs (`pi -p`) pass `--approve` to trust project-local files for that run.
+Two things that will bite you otherwise:
+
+- **A local-path install does not run `npm install`.** Only git sources do. Pointing
+  `pi install` at a bare source tree fails on load with
+  `Cannot find module 'micromatch'` — run `npm install --omit=dev` in the package dir first.
+- **Pin a `@ref` for git sources.** Without one you get whatever the default branch is;
+  in this fork `main` currently still holds upstream 0.4.0 (the version with the four
+  defects and the Python dependency) until the work on `feat/deterministic-classify` lands.
+
+Then **restart pi**. `/reload` re-reads config and skills, but `bash`/`powershell` tool
+overrides (the opt-in `transcodeBash`) are registered at startup only. Use `/trust` to skip
+the project-trust prompt in later sessions, or pass `--approve` for non-interactive `pi -p` runs.
+
+Then create the config — **this step is not optional**, because with no config the extension
+stays inert and pi's own `read` decodes GB bytes with `buffer.toString("utf-8")`: lossy and
+**silent** (you get `????????`, not an error, and the model will happily “fix” it):
+
+```bash
+node <package-dir>/tools/scan-encoding.mjs . --init --dry-run   # 先看建议
+node <package-dir>/tools/scan-encoding.mjs . --init             # 再写盘（不会覆盖已有配置）
+```
 
 ## Notes / limitations
 
@@ -249,6 +270,7 @@ Tomcat URI 编码、native2ascii、JDBC 参数、以及 SVN 上所有同事的�
 
 | 文档 | 内容 |
 |---|---|
+| [docs/INSTALL.md](./docs/INSTALL.md) | 在另一台机器上安装：git/本地路径/npm 三条路线、本地路径不装依赖的坑、装完自检与故障表 |
 | [docs/CONFIG-GUIDE.md](./docs/CONFIG-GUIDE.md) | 安装、心理模型、**配置键全参考**、写目标决策表、真实场景配方、错误信息阅读、Eclipse/Tomcat/SVN 团队注意事项、GB18030 升级清单 |
 | [docs/ACCEPTANCE.md](./docs/ACCEPTANCE.md) | §8 A-1…A-9 / §6.2 T-1…T-15 / §6.3 端到端逐条证据与可复现命令 |
 | [docs/P0-BASELINE.md](./docs/P0-BASELINE.md) | fork 基线盘点与开工前的 Python 基线 |

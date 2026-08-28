@@ -165,4 +165,4 @@ lossy/empty/截断 UTF-8 回归/杂散续字节/`incompleteUtf8Tail` 边界/倒�
 （含 `cat *.java`、`cat a b` 放弃）/配置开关与垃圾值不悄悄开启/operations 包装三条
 （转码、UTF-8 不改、异常也 flush）/OS 码页探测/settings 镜像两条。
 
-全套：`npx tsc --noEmit` 干净，`npx vitest run` **17 文件 / 223 用例**全绿。
+全套：`npx tsc --noEmit` 干净，`npx vitest run` **18 文件 / 230 用例**全绿。

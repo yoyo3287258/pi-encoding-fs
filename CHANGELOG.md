@@ -80,14 +80,40 @@
    内置 grep 只看得到 2 个）—— 多趟编码搜索 + 逐文件复核。
 4. **不可映射字符静默变 `?` / BOM 头部损坏** —— 闸门 1 + 闸门 2。
 
+### 工具与文档
+
+- **修复 `tools/scan-encoding.mjs --init` 其实不存在**：README / CONFIG-GUIDE 一直写着“三步上手 ② 跑 --init”，
+  但脚本里根本没有这个参数（会被当普通参数忽略）—— 用户会以为生成了配置其实没生成。
+  现在把它实现为一等公民，并且推断优先级 = **工程声明 > 字节事实 > 最窄覆盖**：
+  - 读 Eclipse `.settings/org.eclipse.core.resources.prefs`（`encoding/<路径>=X`，逐路径声明直接搬成 overrides）、
+    `pom.xml` 的 `project.build.sourceEncoding`、gradle `encoding`、`.editorconfig` `charset`、
+    `.gitattributes` `working-tree-encoding`（后者会被识别并提醒“那是路线 C，别跟本配置两层都转”）；
+  - 没声明时，不再“取超集 GB18030”，而是取**能覆盖全部观测字节的最窄编码**（GB2312 不参与推断：
+    它是 GBK 真子集、GBK 向后兼容，拿它当根编码只会白白多拒写）；
+    选超集的危害是静默写出 Eclipse/GBK 读不懂的 4 字节序列；
+  - **与字节矛盾的声明不采纳**，只报出来给人看（真实工程实测：`encoding/WebContent=GBK` 与范围内
+    1965/2009 个文件的字节不符）；
+  - `--dry-run`（只看建议，磁盘不动）、已有配置时默认**拒写并退出码 1**、`--force` 才覆盖；
+    推断依据全部写进配置头部注释（配置要进版本库，同事得看懂为什么是这个值）；
+  - 真实工程验证：推出 `sourceEncoding = GBK`（依据：“能覆盖全部 3114 个传统编码文件的最窄候选”），
+    与手工部署的配置一致。修掉的三个实现坑：`iconv.getEncoding` **不是公开 API**（每次抛错→
+    声明全被吞）、prefs 正则取值用了不存在的 `m[3]`、文件/目录判断的正则只允许 1 位扩展名。
+- 新增 `docs/INSTALL.md`：另一台机器上的三条安装路线全部实测（含失败原文）。两个实测结论：
+  **本地路径 `pi install` 不会帮你 `npm install`**（只有 git 源会），纯源码拷贝会直接报
+  `Cannot find module 'micromatch'`；以及 git 源**必须钉 `@ref`**（本 fork 的 `main` 仍是上游 0.4.0 旧代码）。
+- README 的 Install 一节重写为实测版本（含上面两个坑与“为什么必须跑 --init”）；
+  CONFIG-GUIDE 从“三步上手”改为“四步上手”，第 ④ 步明确是**重启 pi**而不是 `/reload`。
+
 ### 测试
 
-- 从上游 60 用例扩展到 **223 用例 / 17 文件**（`tsc --noEmit` 干净）。
+- 从上游 60 用例扩展到 **230 用例 / 18 文件**（`tsc --noEmit` 干净）。
 - 新增：字节级判定矩阵、无损回环、UTF-8 保护、闸门 1/2/3（含 `verifyWrite:false` 反证、
   seam 抛错回滚、临时文件不残留）、写目标决策、真实工程影子树端到端（164 份真实文件：
   读→写幂等 164/164 字节一致）、并发写、系统提示 A-8、grep 27 用例、
   **P5 shell 输出转码 20 用例**（含一个只能靠真跑发现的回归：`head -c 120` 把 UTF-8 截成
-  半个字符 → 早期版本会把整块 UTF-8 输出当成 GBK 转码）。
+  半个字符 → 早期版本会把整块 UTF-8 输出当成 GBK 转码）、
+  **`--init` 工具行为 7 用例**（子进程真跑：声明优先、最窄覆盖、矛盾声明不采纳、
+  不覆盖已有配置、`--dry-run` 不碰磁盘、生成的配置能被扩展自己解析且零警告）。
 - 真实工程（SVN + Eclipse + Tomcat 的 665MB / 25079 文件 Java Web 项目）**活体 `pi` 验收**
   全部通过，命令与输出见 `docs/ACCEPTANCE.md`。
 
