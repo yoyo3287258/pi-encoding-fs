@@ -4,7 +4,7 @@
 `0.5.0` 起为 fork（`yoyo3287258/pi-encoding-fs`）的版本线；`0.1.0…0.4.0` 是上游
 （`15wtyuan/pi-encoding-fs`）的历史版本，一并列出以便对照。
 
-## 0.5.0 — fork（P1 判定器 / P2 三道闸门 / P3 生态）
+## 0.5.0 — fork（P1 判定器 / P2 三道闸门 / P3 生态 / P5 shell 输出转码）
 
 **破坏性变更：读侧不再使用 Python + `chardet`；写侧从「配置说了算」改成「不损坏既有内容高于配置」。**
 
@@ -34,6 +34,17 @@
 - `src/notify.ts` + `tool_result` 钩子：闸门与判定的提示走 **UI 通知 + 工具结果附注**，
   永不进入 `ops.readFile` 的字节缓冲区（pi 的 `edit` 拿它当基线，进去就会被写回磁盘）。
 - 二进制保护扩展：UTF-32 BOM 归 `binary`；图片附件路径保持原生（不转码、不破坏 PNG/JPEG 字节）。
+- **P5（实验特性，默认关闭）**：`bash` / `powershell` 的**字节输出**转成 UTF-8。
+  - 新键 `transcodeBash`：`false`（默认）/ `"auto"` / 具体编码名；`bashFileDump`（默认 true）：
+    `type`/`cat`/`more`/`less`/`head`/`tail`/`Get-Content` 倒单文件时直接用**该文件自己的读编码**。
+  - 注入点是 `createBashToolDefinition(cwd,{operations})` 的 `onData` —— 必须在
+    pi 的 `OutputAccumulator`（非 fatal TextDecoder，不可逆）之前做完；
+    `src/encoding/stream-transcode.ts` 用 iconv 的 stateful decoder 处理**跳 chunk 的半个汉字**。
+  - 保证：合法 UTF-8 / 二进制 / 不可判定的输出**永远原样透传**；只有真转了才多一行
+    `[encoding] bash 输出已由 GBK 转成 UTF-8…`（带“这个编码是谁定的”的依据 + lossy 提醒）。
+  - `false` 时连 `bash` 工具都不覆盖（零行为变化）；开启后**需重启 pi** 生效。
+  - 覆盖 bash 工具时从 `settings.json` 镜像用户的 `shellPath` / `shellCommandPrefix`
+    （`src/pi-settings.ts`）—— 不这么做就是行为回归。
 - 工具：`tools/scan-encoding.mjs`（`npm run scan` — 全仓编码画像 + 已损坏文件清单 + CSV）、
   `tools/bench-p3.mjs`（`npm run bench` — A-7 延迟与 grep 趟数实测）。
 - 文档：`docs/CONFIG-GUIDE.md`（键参考、写目标决策表、配方、错误信息阅读、Eclipse/Tomcat/SVN
@@ -71,10 +82,12 @@
 
 ### 测试
 
-- 从上游 60 用例扩展到 **203 用例 / 16 文件**（`tsc --noEmit` 干净）。
+- 从上游 60 用例扩展到 **223 用例 / 17 文件**（`tsc --noEmit` 干净）。
 - 新增：字节级判定矩阵、无损回环、UTF-8 保护、闸门 1/2/3（含 `verifyWrite:false` 反证、
   seam 抛错回滚、临时文件不残留）、写目标决策、真实工程影子树端到端（164 份真实文件：
-  读→写幂等 164/164 字节一致）、并发写、系统提示 A-8、grep 27 用例。
+  读→写幂等 164/164 字节一致）、并发写、系统提示 A-8、grep 27 用例、
+  **P5 shell 输出转码 20 用例**（含一个只能靠真跑发现的回归：`head -c 120` 把 UTF-8 截成
+  半个字符 → 早期版本会把整块 UTF-8 输出当成 GBK 转码）。
 - 真实工程（SVN + Eclipse + Tomcat 的 665MB / 25079 文件 Java Web 项目）**活体 `pi` 验收**
   全部通过，命令与输出见 `docs/ACCEPTANCE.md`。
 

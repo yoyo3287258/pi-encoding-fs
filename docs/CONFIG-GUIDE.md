@@ -49,6 +49,8 @@ pi install D:/develop/pi/pi-encoding-fs      # 不加 -l = 写进 ~/.pi/agent/se
 | `readStrategy` | `auto` | `config` = 跳过字节判定，强制按 `sourceEncoding` 解（极端场景：判定不了的自定义编码） | 少用；用它就得自己保证正确 |
 | `autoCandidates` | `GB18030,GBK,GB2312,Big5,Shift_JIS,EUC-KR,EUC-JP` | 自动判定链（顺序即优先级）。**单字节/escape 编码禁止出现在这里**（性质 P-6：它们对任意字节都能"无损回环"，判定必然假阳性） | 想调歧义优先级时 |
 | `confidenceThreshold` | — | 保留解析、**忽略使用**（不让上游旧配置报错） | 不用管 |
+| `transcodeBash` | `false` | **P5 实验特性**：把 `bash`/`powershell` 的字节输出也转成 UTF-8。`false` / `"auto"`（字节判定优先，判不出来退到 OS 控制台码页）/ 写具体编码名如 `"GBK"` | 需要在 shell 里 `cat`/`type`/`javac`/`mvn` 看中文时；**改完要重启 pi** |
+| `bashFileDump` | `true` | 仅在 `transcodeBash` 开启时有意义：`type`/`cat`/`more`/`less`/`head`/`tail`/`Get-Content` 倒**单个**文件时，直接用该文件自己的读编码（比猜码页准）；带通配符或多文件的命令自动放弃这条路 | 基本不用动 |
 | `overrides[]` | `[]` | 按 glob 的局部覆盖，见 §2.1 | 见下 |
 
 ### 2.1 overrides 的匹配与优先级
@@ -151,6 +153,42 @@ GBK/Latin-1 的 css）。按旧写法（声明就是写目标）这些文件会�
 
 `pattern` 支持任意 glob，写全路径即可精确到单文件。
 
+### 3.5 在 shell 里看中文（P5 实验特性）
+
+默认情况下本扩展**不碰 shell** —— `cat`/`type` 一个 GBK 文件，模型收到的就是带 U+FFFD 的乱码
+（pi 用非 fatal 的 TextDecoder 解码，不可逆）。想让它可读：
+
+```jsonc
+{
+  "sourceEncoding": "GBK",
+  "transcodeBash": "auto",   // 或 "GBK"：跳过码页探测直接指定
+  "bashFileDump": true       // type/cat 单文件时用该文件自己的读编码（最准）
+}
+```
+
+行为保证（都有回归用例）：
+- **合法 UTF-8 输出永远原样透传**（一个字节都不改，也不留提示）；
+- 判定为二进制的输出永远不碰；
+- 被截断的 UTF-8 序列（`head -c`、样本边界）不会被误当成 GBK；
+- 只有真的转了才会在结果尾部多一行 `[encoding] bash 输出已由 GBK 转成 UTF-8…`，
+  里面带“这个编码是谁定的”的依据；
+- 关掉时连 `bash` 工具都不覆盖 → 行为与未装扩展逐字节一致。
+
+三个坑：
+1. 改这个键**需要重启 pi**（工具注册在启动时定），`/reload` 不够；
+2. 输出里**混着两种编码**（UTF-8 进度条 + GBK 错误消息）时不要开：整体会被按一个编码解释；
+3. **输入侧不转**：`echo 中文 > f.txt` 这类绕过闸门的重定向写文件一律不支持，
+   要写文件请用 `write`/`edit` 工具。
+
+实测 A/B（真实 GBK 工程，同一条 `head -c 200 <gbk 文件>`）：
+
+| 配置 | 模型看到的 | U+FFFD |
+|---|---|---|
+| 缺省（关） | `@version ¶¯½¨Ê±¼ä£º2015Äê12ÔÂ…` | 15 |
+| `"auto"` | `@version 创建时间：2015年12月25日 上午10:30:00` | 0 |
+
+细节与踩坑记录见 [P5-NOTES.md](./P5-NOTES.md)。
+
 ## 4. 报错怎么读（三条真实消息）
 
 **闸门 1**（GBK 装不下生僻字）
@@ -197,4 +235,5 @@ GBK/Latin-1 的 css）。按旧写法（声明就是写目标）这些文件会�
 
 - 不做编码迁移（GBK → UTF-8 批量转码）。§7 明确排除，`force` 也只影响单个被编辑文件的写出语义。
 - 不修复历史上已被毁掉的文件（含 U+FFFD / 锟斤拷的那些）。它只保证**不再新增**损伤。
-- 不碰 shell（bash/powershell）输出转码 —— 那是 P5 的独立 PR。
+- shell 输出转码是**默认关闭的实验特性**（见 §3.5）；输入侧（往命令参数/重定向里写中文）
+  永远不转 —— 那等于绕过闸门 1/2/3 写文件。

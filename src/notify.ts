@@ -50,6 +50,25 @@ export function clearEncodingNotes(): void {
   pending.clear();
 }
 
+// shell 转码（P5）的提示不按文件路径键（一次命令输出不属于某个文件），用一个不可能
+// 被 path.resolve 生成的固定键。
+const SHELL_KEY = "\u0000shell-output";
+
+export function pushShellNote(message: string): void {
+  if (!message) return;
+  const list = pending.get(SHELL_KEY) ?? [];
+  if (list.length < MAX_NOTES_PER_FILE && !list.includes(message)) {
+    list.push(message);
+    pending.set(SHELL_KEY, list);
+  }
+}
+
+export function drainShellNotes(): string[] {
+  const list = pending.get(SHELL_KEY);
+  pending.delete(SHELL_KEY);
+  return list ?? [];
+}
+
 /** 把若干条提示压成一行为工具结果尾部文本（超长截断，保持上下文开销可控） */
 export function notesToSuffix(notes: string[], maxChars = 400): string {
   if (!notes.length) return "";

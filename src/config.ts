@@ -52,10 +52,25 @@ export interface EncodingConfig {
   autoCandidates?: string[];
   /** §4：保留解析、忽略使用（不让上游已有配置报错） */
   confidenceThreshold?: number;
-  /** P5 预留，本轮不实现 */
-  transcodeBash?: boolean;
+  /**
+   * P5（§5.5，**实验特性，默认关闭**）：把 `bash`/`powershell` 的 stdout/stderr 按编码转成 UTF-8。
+   *  - `false`（默认）：完全不碰，与未装扩展逐字节一致。
+   *  - `true` / `"auto"`：先用确定性字节判定（跟读文件同一套 `classifyBuffer`），
+   *    判不出来再退到操作系统控制台码页（Windows `chcp` / POSIX `LC_*`）。
+   *  - `"<编码名>"`（如 `"GBK"`）：跳过码页探测，直接指定第二候选。
+   * 合法 UTF-8 输出永远原样透传；判定为 binary 的输出永远不碰。
+   */
+  transcodeBash?: BashTranscodeMode;
+  /**
+   * P5：`type`/`cat`/`Get-Content` 这类「把文件原样倒出来」的命令，
+   * 优先用**该文件自己的读编码**（比猜控制台码页准得多）。仅在 transcodeBash 生效时有意义。
+   */
+  bashFileDump?: boolean;
   overrides?: OverrideRule[];
 }
+
+/** `transcodeBash` 的合法值：false | true(="auto") | "auto" | 具体编码名 */
+export type BashTranscodeMode = false | "auto" | string;
 
 /** 目录级缓存的条目：连同 config 的 mtime/size 一起存，配置文件被改了就重读（T-14）。 */
 interface CacheEntry {
@@ -100,7 +115,8 @@ interface ConfigDefaults {
   protectUtf8: boolean;
   autoCandidates: string[];
   confidenceThreshold: number;
-  transcodeBash: boolean;
+  transcodeBash: BashTranscodeMode;
+  bashFileDump: boolean;
 }
 
 const DEFAULTS: ConfigDefaults = {
@@ -112,6 +128,7 @@ const DEFAULTS: ConfigDefaults = {
   autoCandidates: [...DEFAULT_AUTO_CANDIDATES],
   confidenceThreshold: 0.8,
   transcodeBash: false,
+  bashFileDump: true,
 };
 
 // dir -> 已检查（可能为 null = 这层没有配置）
@@ -226,6 +243,34 @@ export function stripJsonComments(src: string): string {
   return out;
 }
 
+/**
+ * P5：把用户写的 `transcodeBash` 归一。注意**垃圾值默认关**（这项是实验特性，
+ * 写错了就该保持未装载时的行为，而不是默默开始改命令输出）。
+ */
+export function normalizeBashMode(raw: unknown, where: string, warnings: string[]): BashTranscodeMode {
+  if (raw === undefined || raw === false || raw === "false" || raw === "off") return false;
+  if (raw === true || raw === "auto" || raw === "on") return "auto";
+  if (typeof raw === "string") {
+    try {
+      const n = normalizeEncoding(raw);
+      if (n === "UTF-8") {
+        warnings.push(`${where}: transcodeBash="${raw}" 等于目标就是 UTF-8（本来就不转）→ 按 false 处理`);
+        return false;
+      }
+      if (isStatefulEncoding(n)) {
+        warnings.push(`${where}: transcodeBash="${raw}" 是转义序列编码，无法对任意输出做无损判定 → 改用 "auto"`);
+        return "auto";
+      }
+      return n;
+    } catch {
+      warnings.push(`${where}: transcodeBash="${raw}" 不是可用编码名 → 改用 "auto"`);
+      return "auto";
+    }
+  }
+  warnings.push(`${where}: transcodeBash 只接受 false/"auto"/编码名，收到 ${JSON.stringify(raw)} → 按 false（关闭）处理`);
+  return false;
+}
+
 function validateConfig(parsed: Record<string, unknown>, where: string): { config: EncodingConfig; warnings: string[] } {
   const warnings: string[] = [];
   const merged = { ...DEFAULTS, ...(parsed ?? {}) } as EncodingConfig;
@@ -279,6 +324,13 @@ function validateConfig(parsed: Record<string, unknown>, where: string): { confi
     } else merged.autoCandidates = kept;
   }
   if (parsed.confidenceThreshold === undefined) merged.confidenceThreshold = DEFAULTS.confidenceThreshold;
+  // P5：transcodeBash / bashFileDump 只在根级有意义（命令输出不属于某个文件），不进 overrides
+  merged.transcodeBash = normalizeBashMode(parsed.transcodeBash, where, warnings);
+  if (parsed.bashFileDump === undefined) merged.bashFileDump = DEFAULTS.bashFileDump;
+  else if (typeof parsed.bashFileDump !== "boolean") {
+    warnings.push(`${where}: bashFileDump 必须是 true/false → 用默认 true`);
+    merged.bashFileDump = true;
+  } else merged.bashFileDump = parsed.bashFileDump;
   if (merged.overrides) {
     merged.overrides = merged.overrides.map((r) => {
       const rule: OverrideRule = { ...r };
@@ -472,4 +524,34 @@ function normalizeRuleLabel(label: string | undefined): string | null {
 /** v1 API：只回读编码（grep / 旧测试用）。新代码请用 resolveFileRule + classify。 */
 export function resolveOverrideEncoding(absFilePath: string, found: FoundConfig): string {
   return resolveFileRule(absFilePath, found).sourceEncoding;
+}
+
+/** P5：`bash`/`powershell` 输出转码的规则（根级配置，不做 override 匹配 —— 命令输出不属于某个文件） */
+export interface ShellTranscodeRule {
+  /** 生效的模式：normalizeBashMode 已把 true/"on" 归一成 "auto"，把垃圾值归一成 false */
+  mode: BashTranscodeMode;
+  /** 是否对 type/cat/Get-Content 这类“倒文件”命令用该文件自身的读编码 */
+  fileDump: boolean;
+  /** 字节判定失败时的第二候选（= 该作用域声明的编码；"auto" 模式下还会再退到 OS 码页） */
+  sourceEncoding: string;
+  autoCandidates: string[];
+  configDir: string;
+  warnings: string[];
+}
+
+/** 从 startDir 往上找最近的配置，返回 shell 转码规则；没配置或功能是关的 → null（零行为变化） */
+export function shellRuleFor(startDir: string): ShellTranscodeRule | null {
+  const found = findNearestConfigSync(startDir);
+  if (!found) return null;
+  const warnings: string[] = [...(found.warnings ?? [])];
+  const mode = normalizeBashMode(found.config.transcodeBash, found.configDir, warnings);
+  if (mode === false) return null;
+  return {
+    mode,
+    fileDump: found.config.bashFileDump !== false,
+    sourceEncoding: found.config.sourceEncoding,
+    autoCandidates: found.config.autoCandidates ?? [...DEFAULT_AUTO_CANDIDATES],
+    configDir: found.configDir,
+    warnings,
+  };
 }

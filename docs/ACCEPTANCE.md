@@ -6,7 +6,7 @@
 
 ```bash
 npx tsc --noEmit                      # 无输出 = 干净
-npx vitest run                        # 16 文件 / 203 用例
+npx vitest run                        # 17 文件 / 223 用例
 ```
 
 ---
@@ -159,6 +159,20 @@ per file by deterministic byte classification — no guessing, no subprocess.
 | T-13 | 1MB 单次判定 < 60ms；缓存后 < 1ms | `test/classify.test.ts` | ✅ |
 | T-14 | 配置热更新后缓存失效 | `test/resolve.test.ts` T-14 组（不手动清缓存也生效；mtime+size+`configGeneration`） | ✅ |
 | T-15 | `readStrategy:"config"` 强制模式（可控，不崩溃） | `test/resolve.test.ts` T-15 组 | ✅ |
+
+## P5（§5.5 可选阶段）—— 已实现，默认关闭
+
+| 验证点 | 命令 / 位置 | 结果 |
+|---|---|---|
+| 默认关（A-1 延伸） | `shellRuleFor()` 无配置或 `transcodeBash:false` → `null`，`index.ts` 连 `bash` 都不覆盖 | ✅ `test/p5-shell.test.ts` “配置开关” |
+| 真转码（活体 A/B） | 同一条 `head -c 200 <GBK 文件>`：关→**15 个 U+FFFD**乱码；开 `"auto"`→**0 个**、正确中文 + `[encoding] bash 输出已由 GBK 转成 UTF-8（161B→171B…）` | ✅ `%TEMP%\e2e-p5-off2.json` / `e2e-p5-on.json` |
+| UTF-8 输出不改 | 单元用例 + 活体（`head -c 120` UTF-8 配置）→ 无附注、字节一致 | ✅ |
+| 跳 chunk 半个汉字 | 3 字节一切喂入，结果无 U+FFFD | ✅ |
+| 截断误判回归（只能真跑发现） | `head -c` 剪断 UTF-8 多字节字符 → 早期版本会整块转码（`─`→`鑄€`）；现在 `incompleteUtf8Tail()` 只放行“合法 UTF-8 序列前缀” | ✅ 含反向用例（ASCII + 末尾一个 GBK 汉字仍转码） |
+| 行为回归防护 | 覆盖 `bash` 时镜像用户的 `shellPath` / `shellCommandPrefix` | ✅ `src/pi-settings.ts` + 用例 |
+| 不做输入侧 | `echo 中文 > f.txt` 这类重定向不转（等于绕过三道闸门） | ✅ 设写不实现，文档明写 |
+
+细节、判定优先级表与两个活体跑出来的坑见 [P5-NOTES.md](./P5-NOTES.md)。
 
 ## §6.3 端到端手工验收（真跑 pi 本体）
 

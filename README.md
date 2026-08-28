@@ -60,6 +60,8 @@ unless a deeper config overrides it.
   "protectUtf8": true,            // UTF-8 文件不被转码
   "readStrategy": "auto",         // auto | config
   "autoCandidates": ["GB18030", "GBK", "GB2312", "Big5"],
+  "transcodeBash": false,         // P5 实验特性：false | "auto" | "<编码名>"（需重启 pi）
+  "bashFileDump": true,           //   type/cat/Get-Content 倒文件时用该文件自身的读编码
   "overrides": [
     { "pattern": "docs/**", "encoding": "UTF-8" },
     { "pattern": "*.properties", "encoding": "ISO-8859-1", "force": true, "unmappable": "escape" }
@@ -103,8 +105,13 @@ runs (`pi -p`) pass `--approve` to trust project-local files for that run.
 
 ## Notes / limitations
 
-- Only `read` / `write` / `edit` / `grep` are overridden. `bash`, `find`, and `ls` are not
-  touched (e.g. a `cat` inside `bash` won't decode GB files). P5 will look at shell output.
+- Only `read` / `write` / `edit` / `grep` are overridden by default. `bash`, `find`, and `ls` are not
+  touched (e.g. a `cat` inside `bash` won't decode GB files) — see the next bullet for the opt-in.
+- **P5 实验特性（默认关）**：`"transcodeBash": "auto"` 会把 `bash`/`powershell` 的字节输出也转成
+  UTF-8（跟读文件用同一套字节判定；`type`/`cat`/`head` 倒文件时优先用那个文件自己的读编码）。
+  合法 UTF-8 与二进制输出永远原样透传；关掉时连 `bash` 工具都不覆盖（零行为变化）。
+  注意：这个开关**需要重启 pi** 才生效（工具注册在启动时定），`/reload` 不够。
+  风险与实测见 [docs/P5-NOTES.md](./docs/P5-NOTES.md)；输出里混着两种编码时不要开。
 - `grep` shells out to `ripgrep` **once per candidate encoding** (`--encoding` per pass; only
   for non-ASCII patterns; single-byte encodings are skipped because they cannot be
   distinguished from UTF-8 at byte level). Every raw hit is then re-checked by decoding the file
@@ -249,6 +256,7 @@ Tomcat URI 编码、native2ascii、JDBC 参数、以及 SVN 上所有同事的�
 | [docs/P1-TEST-MAP.md](./docs/P1-TEST-MAP.md) | 上游 60 用例 → fork 现状的逐条对账（A-2 口径） |
 | [docs/P2-NOTES.md](./docs/P2-NOTES.md) | 三道闸门与写链次序、真实工程影子树端到端证据 |
 | [docs/P3-NOTES.md](./docs/P3-NOTES.md) | grep / 系统提示 / 预览路由 / 并发写，以及真实 `pi` 活体验收记录 |
+| [docs/P5-NOTES.md](./docs/P5-NOTES.md) | `bash`/`powershell` 输出转码（实验特性、默认关）：注入点、判定顺序、两个活体跑出来的坑 |
 | [CHANGELOG.md](./CHANGELOG.md) | fork 与上游的版本历史 |
 | [docs/superpowers-upstream/](./docs/superpowers-upstream) | 上游原始设计/计划文档（保留存档，已改名以免混淆） |
 

@@ -5,13 +5,23 @@ import {
   createReadToolDefinition,
   createWriteToolDefinition,
   createEditToolDefinition,
+  createBashToolDefinition,
+  createPowerShellToolDefinition,
+  createLocalBashOperations,
+  createLocalPowerShellOperations,
 } from "@earendil-works/pi-coding-agent";
-import { makeReadOperations, makeWriteOperations, makeEditOperations } from "./operations";
+import {
+  makeReadOperations,
+  makeWriteOperations,
+  makeEditOperations,
+} from "./operations";
 import { createEncodingGrepDefinition } from "./grep";
 import { wrapEditToolWithEncodingPreview, clearUtf8Cache } from "./edit-preview";
-import { clearConfigCache } from "./config";
+import { clearConfigCache, shellRuleFor } from "./config";
+import { readPiShellSettings } from "./pi-settings";
+import { makeTranscodingShellOperations } from "./shell";
 import { systemNoteFor } from "./sysnote";
-import { clearEncodingNotes, drainEncodingNotes, notesToSuffix } from "./notify";
+import { clearEncodingNotes, drainEncodingNotes, drainShellNotes, pushEncodingNote, notesToSuffix } from "./notify";
 
 type AnyText = { type: "text"; text: string };
 
@@ -39,6 +49,28 @@ export default function (pi: ExtensionAPI) {
 
   // grep: 有配置的目录树里用自实现（多趟编码 + 逐文件判定）；无配置整体委托内置（§5.1）。
   pi.registerTool(createEncodingGrepDefinition(cwd));
+
+  // P5（§5.5）：shell 输出转码。**默认关闭** —— 只有当前树最近的配置里显式写了
+  // transcodeBash 才覆盖 bash/powershell；否则连注册都不做，保证 A-1（无配置零行为变化）。
+  // 覆盖时必须把 pi 自己的 shellPath / shellCommandPrefix 带上（我们从 settings.json 镜像），
+  // 不然用户设过这两键后装了本扩展就会静默失效 —— 那是行为回归，不是特性。
+  const shellRule = shellRuleFor(cwd);
+  if (shellRule) {
+    const shell = readPiShellSettings(cwd);
+    pi.registerTool(
+      createBashToolDefinition(cwd, {
+        operations: makeTranscodingShellOperations(createLocalBashOperations(), shellRule) as never,
+        ...(shell.shellPath ? { shellPath: shell.shellPath } : {}),
+        ...(shell.shellCommandPrefix ? { commandPrefix: shell.shellCommandPrefix } : {}),
+      }),
+    );
+    pi.registerTool(
+      createPowerShellToolDefinition(cwd, {
+        operations: makeTranscodingShellOperations(createLocalPowerShellOperations(), shellRule) as never,
+      }),
+    );
+    for (const w of shellRule.warnings) pushEncodingNote(cwd, w);
+  }
 
   // Caches: config dir cache + classify cache + UTF-8 preview cache + pending notes.
   pi.on("session_start", async () => {
@@ -71,6 +103,16 @@ export default function (pi: ExtensionAPI) {
   // 才贴到工具结果上 —— 磁盘永远看不到这些文字。
   pi.on("tool_result", async (event, ctx) => {
     const name = event.toolName;
+    // shell 转码的回显（P5）：不按路径键，单独取
+    if (name === "bash" || name === "powershell") {
+      const sn = drainShellNotes();
+      if (sn.length === 0) return undefined;
+      for (const n of sn) ctx.ui?.notify?.(n, "info");
+      if (event.isError) return undefined;
+      const suffix = notesToSuffix(sn);
+      const content = (event.content ?? []) as (AnyText | { type: "image"; data: string; mimeType: string })[];
+      return { content: [...content, { type: "text", text: suffix }] };
+    }
     if (name !== "read" && name !== "edit" && name !== "write") return undefined;
     const input = (event.input ?? {}) as Record<string, unknown>;
     const rel = typeof input.path === "string" ? input.path : typeof input.file_path === "string" ? input.file_path : null;
