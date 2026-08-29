@@ -8,6 +8,10 @@
 
 **破坏性变更：读侧不再使用 Python + `chardet`；写侧从「配置说了算」改成「不损坏既有内容高于配置」。**
 
+**发布状态**：`v0.5.0` 已打 tag（fork `main` = `afdbf00`，PR #1 已合并），npm 包
+`@yoyo3287258/pi-encoding-fs@0.5.0` 已发布（public）。用 scoped 名而不是裸名
+`pi-encoding-fs`，因为裸名属于上游且行为不兼容。
+
 ### 新增
 
 - `src/encoding/classify.ts`：**零依赖确定性字节判定**。链条固定为

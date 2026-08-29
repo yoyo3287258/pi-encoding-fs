@@ -13,7 +13,8 @@
 > | 全局副作用 | 无条件覆盖 4 个工具 + 无条件往系统提示里塞话（污染非 GBK 项目） | **无配置树整体委托内置、系统提示零注入（A-1 / A-8）；但无配置下碰到非 UTF-8 文件会多一句 `[encoding]` 提示（字节不改）** |
 >
 > 因此**不要** `pi install npm:pi-encoding-fs`，请用本仓库（项目级安装，理由见下方 Requirements 与需求文档 §5.1/§5.2）。
-> 本 fork 的包名是 `@yoyo3287258/pi-encoding-fs`（`0.5.0`）；尚未发布到 npm，现在只能用本地路径或 git 安装。
+> 本 fork 的包名是 `@yoyo3287258/pi-encoding-fs`（`0.5.0`，**已发布到 npm**、public）；
+> 上游那个裸名 `pi-encoding-fs` 是另一个包（停在 `0.4.0`），别装错。
 > 改造目标、红线与验收标准见需求文档
 > [`REQ-pi-encoding-fs-fork.md`](https://github.com/yoyo3287258/pi-encoding-fs/blob/v0.5.0/REQ-pi-encoding-fs-fork.md)
 > （仓库根目录同路径），逐条验收证据见 [docs/ACCEPTANCE.md](./docs/ACCEPTANCE.md)。
@@ -100,6 +101,7 @@ all stay with the checkout):
 cd /path/to/legacy-project
 pi install D:/path/to/pi-encoding-fs -l                # from a local clone
 pi install git:github.com/yoyo3287258/pi-encoding-fs@v0.5.0 -l   # from git (pin the ref!)
+pi install npm:@yoyo3287258/pi-encoding-fs@0.5.0 -l              # from npm (scoped name!)
 ```
 
 Two things that will bite you otherwise:
@@ -107,9 +109,9 @@ Two things that will bite you otherwise:
 - **A local-path install does not run `npm install`.** Only git sources do. Pointing
   `pi install` at a bare source tree fails on load with
   `Cannot find module 'micromatch'` — run `npm install --omit=dev` in the package dir first.
-- **Pin a `@ref` for git sources.** Without one you get whatever the default branch is;
-  in this fork `main` currently still holds upstream 0.4.0 (the version with the four
-  defects and the Python dependency) until the work on `feat/deterministic-classify` lands.
+- **Pin a `@ref` for git sources.** Without one you get whatever the default branch is.
+  This fork's `main` now carries the 0.5.0 work (PR #1 merged) and `v0.5.0` is tagged, so
+  pinning `@v0.5.0` — or using the npm package — is the reproducible option.
 
 Then **restart pi**. `/reload` re-reads config and skills, but `bash`/`powershell` tool
 overrides (the opt-in `transcodeBash`) are registered at startup only. Use `/trust` to skip

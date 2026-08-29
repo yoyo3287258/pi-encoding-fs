@@ -81,20 +81,23 @@ Hint: Start without extensions using "pi -ne".
 
 ---
 
-## 3. 路线 C：npm 包（**尚未发布**）
+## 3. 路线 C：npm 包（**已发布**）
 
 ```powershell
-# 本 fork 的包名是 scoped 的（package.json 里已是这个名字）：
 pi install npm:@yoyo3287258/pi-encoding-fs@0.5.0 -l
 ```
 
 **为什么不用裸名 `pi-encoding-fs`**：npm 包名全局唯一，裸名已被上游
 （`15wtyuan`，最新 `0.4.0`）占着，我们发不上去；而本 fork 的行为与它并不兼容，
-也不应该发到同一个包里混淆用户。所以 `package.json` 的 `name` 已改成
-`@yoyo3287258/pi-encoding-fs`。
+也不应该发到同一个包里混淆用户。所以本包用 scoped 名 `@yoyo3287258/pi-encoding-fs`。
 
-**仍未发布**：scoped 包得由对应 npm 账号发（`@yoyo3287258` 这个 scope 得先在你的 npm
-账号下存在），而且发布就是不可逆的公开动作。要发请明确说一声。在那之前请用路线 A/B。
+**发布已实测验证**（不是只看 `npm publish` 返回成功）：注册表 `latest → 0.5.0`；
+线上 tarball 的 sha1 与本地 dry-run **逐字节一致**（`c064c59b85cce984ca99ddb02d989701d8b31a18`，35 个文件）；
+另在临时目录用 `npm install @yoyo3287258/pi-encoding-fs --omit=dev`（就是 pi 装包用的那个参数）
+真装了一次：peer 全部解析得动、`iconv-lite` / `micromatch` 落地、
+`node_modules/.../tools/scan-encoding.mjs` 对 GBK 样本跑 `--init` 能正确推出根编码。
+
+路线 A 与路线 C 现在等价；不能访外网 / 内网机器用路线 B 拷目录。
 
 ---
 
@@ -190,7 +193,7 @@ node E:\tools\pi-encoding-fs\tools\scan-encoding.mjs . --damaged  # 已被毁掉
 | 代码 | PR #1 已合进 fork 的 `main`（merge commit `20237e1`），分支 `feat/deterministic-classify` 同源 |
 | tag | **`v0.5.0` 已打并推** → 可以直接 `pi install git:github.com/yoyo3287258/pi-encoding-fs@v0.5.0 -l` |
 | GitHub release | 无（只有 tag；需要 release notes 再说一声） |
-| npm 发布 | **未做**。`package.json` 已改用 scoped 名 `@yoyo3287258/pi-encoding-fs`（裸名被上游占着），但还没真正 `npm publish`，见 §3 |
+| npm 发布 | ✅ **已发布** `@yoyo3287258/pi-encoding-fs@0.5.0`（public，`latest → 0.5.0`）。裸名 `pi-encoding-fs` 属于上游，故用 scoped 名；详见 §3 |
 | CI（验收 A-9） | ✅ **双 OS 跑绿**；merge 后的 `main`（`20237e1`）上 run 33233103506 也绿，证据见 [ACCEPTANCE.md](./ACCEPTANCE.md) |
 
 要走路线 A，现在拿 `@v0.5.0` 就能装（上面 §1）。另一台机器不能访外网时用**路线 B**。
