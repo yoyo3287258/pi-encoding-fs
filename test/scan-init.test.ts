@@ -47,6 +47,15 @@ function init(dir: string, extra: string[] = []) {
     return { stdout: String(e.stdout || "") + String(e.stderr || ""), code: typeof e.status === "number" ? e.status : -1 };
   }
 }
+/** 跑任意参数组合（用来验参数校验与 --damaged 这类聚焦输出） */
+function run(args: string[]) {
+  try {
+    const stdout = execFileSync(process.execPath, [TOOL, ...args], { encoding: "utf-8", maxBuffer: 64 << 20 });
+    return { stdout, code: 0 };
+  } catch (e: any) {
+    return { stdout: String(e.stdout || "") + String(e.stderr || ""), code: typeof e.status === "number" ? e.status : -1 };
+  }
+}
 function readCfg(dir: string) {
   const f = path.join(dir, ".encoding-converter.json");
   expect(existsSync(f)).toBe(true);
@@ -183,5 +192,39 @@ describe("scan-encoding --init", () => {
     // 依据打印在 stdout 的 notes 里，让别人看得懂为什么是 UTF-8
     expect(r.stdout).toContain("WebContent/** → UTF-8");
     expect(r.stdout).toContain("占");
+  });
+
+  it("⑨ 参数校验：漏了 -- 或乱写开关必须退出码 2 并提示，不能静默跑成普通画像", () => {
+    const d = mkdtemp("args-");
+    for (let n = 0; n < 3; n++) w(`src/W${n}.java`, gbk(`/** 中文${n} 。*/ class W${n}{}`), d);
+    // 真实踩过的坑：`. init` 被当成普通画像跑完，用户以为生成了配置
+    const typo = run([d, "init"]);
+    expect(typo.code).toBe(2);
+    expect(typo.stdout).toContain("缺少前缀");
+    expect(typo.stdout).toContain("--init");
+    expect(existsSync(path.join(d, ".encoding-converter.json"))).toBe(false);
+    // 未知开关也要拦住，并给就近建议
+    const bogus = run([d, "--int"]);
+    expect(bogus.code).toBe(2);
+    expect(bogus.stdout).toContain("未知参数");
+    // 正确写法仍然正常工作（校验没把合法参数块掉）
+    expect(run([d, "--init", "--out", path.join(d, "r.csv")]).code).toBe(0);
+  });
+
+  it("⑩ --damaged 真实存在（文档承诺过），且不会把扩展自己的配置文件算成受损", () => {
+    const d = mkdtemp("damaged-");
+    for (let n = 0; n < 3; n++) w(`src/X${n}.java`, gbk(`/** 中文${n} 。*/ class X${n}{}`), d);
+    // 一个真受损文件：内容里带 U+FFFD
+    w("src/Broken.java", Buffer.from("/** 已被毁掉的注释 \uFFFD\uFFFD */ class Broken{}", "utf-8"), d);
+    expect(init(d).code).toBe(0); // 生成配置 → 它的注释里字面含有 U+FFFD /「锟斤拷」字样
+    const r = run([d, "--damaged"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("已经被毁的文件");
+    expect(r.stdout).toContain("src/Broken.java");
+    // 关键：自己生成的配置不能出现在受损清单里（否则工具把自己的注释当成数据损坏）
+    expect(r.stdout).not.toContain(".encoding-converter.json");
+    // 聚焦输出：不该再造每扩展名画像表格 / 行尾统计
+    expect(r.stdout).not.toContain("行尾风格");
+    expect(r.stdout).not.toContain("--------");
   });
 });

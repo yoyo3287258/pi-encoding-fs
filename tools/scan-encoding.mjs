@@ -38,6 +38,41 @@ const listUnknown = !!flag("list-unknown", false);
 const doInit = !!flag("init", false);
 const forceInit = !!flag("force", false);
 const dryRun = !!flag("dry-run", false);
+const damagedOnly = !!flag("damaged", false);
+
+/* 参数校验：拼错或漏了 `--` 必须报错，不能静默跑成另一个功能。
+ * 真实踩过的坑：`scan-encoding.mjs . init`（少两个减号）被当成普通画像跑完，
+ * 用户以为生成了配置 —— 比报错危险得多。 */
+const BOOL_FLAGS = new Set(["list-unknown", "init", "force", "dry-run", "damaged"]);
+const VALUE_FLAGS = new Set(["ext", "out", "max-mb"]);
+(() => {
+  const known = new Set([...BOOL_FLAGS, ...VALUE_FLAGS]);
+  const args = argv.slice(argv[0] && !argv[0].startsWith("--") ? 1 : 0);
+  const problems = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith("--")) {
+      const name = a.slice(2);
+      if (!known.has(name)) {
+        const near = [...known].find((k) => k.startsWith(name.slice(0, 3)));
+        problems.push(`未知参数 ${a}${near ? `（是不是想写 --${near}？）` : ""}`);
+        continue;
+      }
+      if (VALUE_FLAGS.has(name)) i++; // 这个开关带值，跳过值
+    } else if (known.has(a)) {
+      problems.push(`参数 ${a} 缺少前缀：请写 --${a}`);
+    } else {
+      problems.push(`多余的位置参数 ${a}（本工具只接受一个目录参数 + --开关）`);
+    }
+  }
+  if (problems.length) {
+    console.error("❌ " + problems.join("\n❌ "));
+    console.error(
+      "用法：node tools/scan-encoding.mjs <目录> [--init [--force]] [--dry-run] [--damaged] [--out report.csv] [--ext java,jsp] [--max-mb 50] [--list-unknown]",
+    );
+    process.exit(2);
+  }
+})();
 
 const SKIP_DIRS = new Set([".git", ".svn", ".hg", ".idea", "node_modules", ".pi"]);
 // 已知二进制扩展名：直接归入 binary，避免整读 665MB 里的图片/class/jar。
@@ -126,8 +161,11 @@ function bump(ext, key) {
         /* 忽略 */
       }
     }
-    if (fffd) damaged.push([path.relative(root, p).replace(/\\/g, "/"), c.kind, fffd]);
     const rel = path.relative(root, p).replace(/\\/g, "/");
+    // 本扩展自己的配置文件不计入“已毁掉”：它的注释里字面含有 U+FFFD /「锟斤拷」这些标记字样
+    // （生成时就是为了告诉人“这里防的是什么”），会被上面的检测命中 —— 纯误报，
+    // 实测在 OAWSSMS 上工具把自己生成的配置标成了受损文件。
+    if (fffd && !/(^|\/)\.encoding-converter\.json(\.|$)/.test(rel)) damaged.push([rel, c.kind, fffd]);
     rows.push({ rel, ext, kind: c.kind, enc: c.enc, pass: c.pass.join("|"), size: st.size, eol: lineEndingOf(b), fffd });
     if (c.kind === "unknown") anomalies.unknown.push([rel, st.size]);
     if (c.kind === "cjk" && c.pass.length > 1) {
@@ -139,6 +177,19 @@ function bump(ext, key) {
     if (c.kind === "utf8-bom") anomalies.bom.push(rel);
   }
 })(root);
+
+/* --damaged：只输出“已被前人毁掉”的清单（文档承诺过的聚焦输出），跳过画像表格 */
+if (damagedOnly) {
+  damaged.sort((a, b) => b[2] - a[2]);
+  const totalFffd = damaged.reduce((s, d) => s + d[2], 0);
+  console.log(`扫描根目录: ${root}`);
+  console.log(`实际判定文件数: ${scanned}（跳过已知二进制扩展名 ${skippedBinary} 个）`);
+  console.log(`\n❗ 已经被毁的文件（内容里已含 U+FFFD / 「锟斤拷」）：${damaged.length} 个，共 ${totalFffd} 处替换字符`);
+  console.log("   这类损坏不可逆，本扩展只能防止新的损坏发生；需要回滚的请查 SVN/Git 历史。");
+  if (!damaged.length) console.log("    （无）");
+  else damaged.forEach(([f, kind, n]) => console.log(`    ${String(n).padStart(4)} 处  [${kind}]  ${f}`));
+  process.exit(0);
+}
 
 const KINDS = ["ascii", "utf8", "utf8-bom", "utf16le", "utf16be", "cjk", "unknown", "binary", "empty", "oversize"];
 console.log(`\n扫描根目录: ${root}`);
