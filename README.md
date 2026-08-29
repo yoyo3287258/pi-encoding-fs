@@ -130,6 +130,9 @@ node <package-dir>/tools/scan-encoding.mjs . --init --dry-run   # 先看建议
 node <package-dir>/tools/scan-encoding.mjs . --init             # 再写盘（不会覆盖已有配置）
 ```
 
+> `<package-dir>` 在哪里？看 [`docs/INSTALL.md §4.1`](./docs/INSTALL.md) 的「安装方式 → 包目录」对照表，
+> 选你安装方式对应的那一行，替换 `<package-dir>` 即可。
+
 ## Notes / limitations
 
 - Only `read` / `write` / `edit` / `grep` are overridden by default. `bash`, `find`, and `ls` are not

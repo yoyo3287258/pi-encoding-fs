@@ -447,20 +447,41 @@ function initFromProfile() {
     }
     push(isDir ? `${d.scope}/**` : d.scope, d.encoding, d.source);
   }
-  if (legacy !== "UTF-8" && overrides.length < 8) {
-    const dirs = new Map();
+  /* ② 目录多数推断：根编码不是 UTF-8 时，把“目录内非 ASCII 明显多数是 UTF-8（≥70% 且 ≥8 个）
+   *    且与根编码不同”的目录补成 UTF-8 override，只取**最浅**覆盖层（避免 WebContent/** 和它的
+   *    每个子目录都重复一条）。老实现有两个毛病：被 `overrides.length < 8` 饿死（声明一多就跳过），
+   *    且要求目录里 0 个传统编码文件（WebContent 这种“1965 UTF-8 + 44 GBK”就发不出来）。
+   *    新语义 = 按目录内多数文件编码推断（你要的那条），新建/纯 ASCII 文件落这个目录时用多数编码写。 */
+  if (legacy !== "UTF-8") {
+    const dirCounts = new Map();
     for (const r of rows) {
       if (r.kind === "binary" || r.kind === "empty" || r.kind === "oversize" || r.kind === "unknown") continue;
       const segs = r.rel.split("/");
-      if (segs.length < 2) continue;
-      const dir = segs.slice(0, Math.min(3, segs.length - 1)).join("/");
-      if (!dirs.has(dir)) dirs.set(dir, { utf8: 0, legacy: 0 });
-      const d = dirs.get(dir);
-      if (r.kind === "utf8" || r.kind === "utf8-bom") d.utf8++;
-      else if (r.kind === "cjk") d.legacy++;
+      for (let i = 1; i < segs.length; i++) {
+        const dir = segs.slice(0, i).join("/");
+        if (!dirCounts.has(dir)) dirCounts.set(dir, { utf8: 0, cjk: 0 });
+        const c = dirCounts.get(dir);
+        if (r.kind === "utf8" || r.kind === "utf8-bom") c.utf8++;
+        else if (r.kind === "cjk") c.cjk++;
+      }
     }
-    for (const [dir, d] of [...dirs.entries()].sort((a, b) => b[1].utf8 - a[1].utf8)) {
-      if (d.utf8 >= 5 && d.legacy === 0) push(`${dir}/**`, "UTF-8", `该目录 ${d.utf8} 个含非 ASCII 的 UTF-8 文件、0 个传统编码文件`);
+    const covered = new Set();
+    const sorted = [...dirCounts.entries()].sort((a, b) => a[0].split("/").length - b[0].split("/").length);
+    for (const [dir, c] of sorted) {
+      if (covered.has(dir)) continue;
+      const total = c.utf8 + c.cjk;
+      if (total < 8) continue;
+      if (c.utf8 < c.cjk || c.utf8 / total < 0.7) continue;
+      const pattern = `${dir}/**`;
+      if (overrides.length >= 60) break;
+      push(
+        pattern,
+        "UTF-8",
+        `该目录 ${c.utf8} 个 UTF-8、${c.cjk} 个传统编码，非 ASCII 中 UTF-8 占 ${Math.round((c.utf8 * 100) / total)}%`,
+      );
+      for (const sub of dirCounts.keys()) {
+        if (sub.startsWith(dir + "/")) covered.add(sub);
+      }
     }
   }
 

@@ -105,14 +105,22 @@ pi install npm:@yoyo3287258/pi-encoding-fs@0.5.0 -l
 
 ### 4.1 生成配置文件
 
+先把 `scan-encoding.mjs` 找出来 —— 它是扩展包里的一个工具脚本，pi 把包装在固定位置：
+
+| 安装方式 | 包目录（含 `tools/scan-encoding.mjs`） |
+|---|---|
+| git 项目级（`-l`） | `.pi/git/github.com/yoyo3287258/pi-encoding-fs/` |
+| git 用户级 | `~/.pi/agent/git/github.com/yoyo3287258/pi-encoding-fs/` |
+| npm 项目级（`-l`） | `.pi/npm/node_modules/@yoyo3287258/pi-encoding-fs/` |
+| npm 用户级 | `~/.pi/agent/npm/node_modules/@yoyo3287258/pi-encoding-fs/` |
+
+下面所有 `node <包目录>/tools/scan-encoding.mjs …` 里的 `<包目录>` 就是上表里对应你安装方式的那一行：
+
 ```powershell
 cd D:\path\to\your-project
-node E:\tools\pi-encoding-fs\tools\scan-encoding.mjs . --init --dry-run   # 先看建议，不写盘
-node E:\tools\pi-encoding-fs\tools\scan-encoding.mjs . --init             # 真写
+node <包目录>/tools/scan-encoding.mjs . --init --dry-run   # 先看建议，不写盘
+node <包目录>/tools/scan-encoding.mjs . --init             # 真写
 ```
-
-（git 安装的包在 `~/.pi/agent/git/github.com/yoyo3287258/pi-encoding-fs/` 或
-`.pi/git/...` 下面，路径自己替换。）
 
 `--init` 的推断优先级（这是它为什么不会瞎猜 GB18030）：
 
@@ -174,14 +182,14 @@ pi -p --approve --no-session "用 read 读 <某个 GBK 文件>，把内容原样
 pi -p --approve --no-session "用 grep 在当前目录搜「<一个只存在于 GBK 文件里的中文词>」，只要文件名和行号"
 
 # ③ 写保护：编辑那个 GBK 文件的一个字，然后核对字节数与行尾没变
-node E:\tools\pi-encoding-fs\tools\scan-encoding.mjs <那个文件>
+node <包目录>/tools/scan-encoding.mjs <那个文件>
 ```
 
 拿不准项目编码就先画像（不改任何文件）：
 
 ```powershell
-node E:\tools\pi-encoding-fs\tools\scan-encoding.mjs .            # 全仓画像 + CSV
-node E:\tools\pi-encoding-fs\tools\scan-encoding.mjs . --damaged  # 已被毁掉的文件清单
+node <包目录>/tools/scan-encoding.mjs .            # 全仓画像 + CSV
+node <包目录>/tools/scan-encoding.mjs . --damaged  # 已被毁掉的文件清单
 ```
 
 ---

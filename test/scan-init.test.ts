@@ -164,4 +164,24 @@ describe("scan-encoding --init", () => {
     expect(rule.verifyWrite).toBe(true);
     expect(rule.protectUtf8).toBe(true);
   });
+
+  it("⑧ 目录多数推断：根编码是 GBK 时，把「目录内非 ASCII 多数是 UTF-8（≥70% 且 ≥8 个）」的目录补成 UTF-8 override，只取最浅层", () => {
+    const d = mkdtemp("dirmajor-");
+    // 根：传统 GBK 文件（把根编码推成 GBK）
+    for (let n = 0; n < 6; n++) w(`src/S${n}.java`, gbk(`/** 服务${n} 。*/ class S${n}{}`), d);
+    // WebContent/ 下：大量 UTF-8 jsp + 少量 GBK 遗留（旧实现因“0 个传统文件”而发不出 override）
+    for (let n = 0; n < 10; n++) w(`WebContent/page/p${n}.jsp`, `<%-- 订单页面${n}：报警阈值=85.5 --%>`, d);
+    for (let n = 0; n < 2; n++) w(`WebContent/page/legacy${n}.jsp`, gbk(`<%-- 旧页面${n}：遗留编码 --%>`), d);
+    const r = init(d);
+    expect(r.code).toBe(0);
+    const cfg = readCfg(d);
+    expect(cfg.sourceEncoding).toBe("GBK");
+    const pats = cfg.overrides.map((o: any) => o.pattern);
+    // 必须生成最浅层 WebContent/** → UTF-8，而不是 WebContent/page/** 或更深
+    expect(pats).toContain("WebContent/**");
+    expect(pats).not.toContain("WebContent/page/**");
+    // 依据打印在 stdout 的 notes 里，让别人看得懂为什么是 UTF-8
+    expect(r.stdout).toContain("WebContent/** → UTF-8");
+    expect(r.stdout).toContain("占");
+  });
 });
