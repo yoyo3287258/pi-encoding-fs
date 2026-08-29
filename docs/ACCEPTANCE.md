@@ -143,8 +143,10 @@ per file by deterministic byte classification — no guessing, no subprocess.
 |---|---|---|
 | 33230915325 | ❌ failure | 首跑，两个 OS 各挂一条（见下） |
 | 33231594192 | ✅ success | `ubuntu-latest / node 22` 与 `windows-latest / node 22` 双绿，含 A-4 门禁与 npm 包内容门禁 |
+| 33232057091 | ❌ failure | 只改了文档却 windows 红 → **偶发**：edit-preview 的预览路由缓存只比 `mtimeMs`，Windows 的 mtime 只到毫秒粒度，同一毫秒内改写会读到过期结论 |
 
-首跑红掉的两条都属于「只在开发者机器以外才暴露」，已各自修掉并加回归用例（详见 [P5-NOTES.md §4.3](./P5-NOTES.md)）：
+三轮里红过的三条都属于「只在开发者机器以外才暴露」，已各自修掉并加回归 / 变确定性
+（第一条的详述见 [P5-NOTES.md §4.3](./P5-NOTES.md)）：
 
 1. **真 bug**：shell 输出转码把 OS 控制台码页当成了「判定优先级」——中文机 chcp=936 碰巧正确，
    英文码机（437）上 GBK 字节被解成框线乱码，比不转更糟。修成 `priorityEncoding`（项目声明，
@@ -152,6 +154,11 @@ per file by deterministic byte classification — no guessing, no subprocess.
 2. **阈值过紧**：A-7 的 `1MB < 60ms` 是本机隔离跑的严格值；19 个测试文件并行时本机可复现 72ms、
    runner 上 84ms → 改成数量级防退化（本机 <150ms / CI <400ms），严格值继续由
    `test/perf/a7-perf.test.ts` 与 `tools/bench-p3.mjs` 的隔离跑记录在 docs/P1-NOTES.md。
+3. **mtime 粒度（偶发）**：预览路由缓存的失效键只有 `mtimeMs` + 配置代数。Windows 的 mtime 只到毫秒，
+   `writeFileSync` 两次极快连写会拿到相同 mtime → 读到过期结论。修：缓存键加上 `size`（与判定缓存、
+   提示去重一致的口径），并把用例改成用 `utimesSync` 显式推后 mtime，不再依赖时钟粒度。
+
+这三条有一个共同点：**本地全绿不能当成验收完成**。所以 A-9 这条必须真在双 OS 上跑绿才算。
 
 查状态（fork 上必须显式指定 repo，否则 gh 会去查上游 parent 而 404）：
 
@@ -165,7 +172,7 @@ gh run view <run-id> --repo yoyo3287258/pi-encoding-fs --log-failed
 ## 已知偏差与上游事实修正（收尾阶段发现）
 
 收尾时在“模拟另一台机器的全新项目”做了三个实验，出三条事实，与需求文档的假设不一致，
-按实记录（呓着改验收口径没意义）：
+按实记录（改验收口径没意义）：
 
 | # | 发现 | 对验收的影响 | 处理 |
 |---|---|---|---|
@@ -191,7 +198,7 @@ gh run view <run-id> --repo yoyo3287258/pi-encoding-fs --log-failed
 | T-10 | grep：GBK 目录搜中文命中；行为与内置对齐（notice/limit/点文件） | `test/grep.test.ts`（27 用例） | ✅ |
 | T-11 | `overrides` 特异性 + `force`（`*.properties`→ISO-8859-1 生效，上游不生效） | `test/config.test.ts`、`test/resolve.test.ts`、`test/edit-preview.test.ts` | ✅ |
 | T-12 | 并发写同一文件无竞态损坏 | `test/concurrency.test.ts`（并驱动出 2 个真 bug，见 P3-NOTES §5） | ✅ |
-| T-13 | 1MB 单次判定 < 60ms；缓存后 < 1ms | `test/classify.test.ts` | ✅ |
+| T-13 | 1MB 判定的耗时防退化（并行负载下本机 <150ms / CI <400ms；严格值隔离跑 ≈25ms，见 docs/P1-NOTES.md） | `test/classify.test.ts` | ✅ |
 | T-14 | 配置热更新后缓存失效 | `test/resolve.test.ts` T-14 组（不手动清缓存也生效；mtime+size+`configGeneration`） | ✅ |
 | T-15 | `readStrategy:"config"` 强制模式（可控，不崩溃） | `test/resolve.test.ts` T-15 组 | ✅ |
 

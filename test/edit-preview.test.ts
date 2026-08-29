@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import iconv from "iconv-lite";
@@ -68,8 +68,13 @@ describe("isUtf8FileCached — 同步预览路由（P3：改为复用 classifyBu
     const f = join(root, "cache.txt");
     writeFileSync(f, "hello\n", "utf-8");
     expect(isUtf8FileCached(f)).toBe(true);
-    // Overwrite with GB bytes (mtime changes) -> cache should re-evaluate.
+    // Overwrite with GB bytes -> cache should re-evaluate.
     writeFileSync(f, iconv.encode("你好\n", "GB18030"));
+    // Windows 的 mtime 只到毫秒粒度，同一毫秒内连写两次会拿到一模一样的 mtime —— CI 的
+    // windows runner 上就因此偶发失败过。缓存键现在多了 size 这一档（长度 6→5 已能失效），
+    // 这里再把 mtime 显式推后 1s，保证本用例不依赖时钟粒度。
+    const mt = statSync(f).mtimeMs + 1000;
+    utimesSync(f, new Date(mt), new Date(mt));
     expect(isUtf8FileCached(f)).toBe(false);
     // 删掉配置（透传接管）→ 即使 mtime 未变也必须重新评估
     rmSync(join(root, ".encoding-converter.json"));

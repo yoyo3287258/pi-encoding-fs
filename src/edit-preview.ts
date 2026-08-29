@@ -135,6 +135,7 @@ function applyEditsExact(normalizedContent: string, edits: EditEdit[], filePath:
 
 interface CacheEntry {
   mtimeMs: number;
+  size: number;
   gen: number;
   upstreamPreviewIsSafe: boolean;
 }
@@ -142,7 +143,7 @@ const utf8Cache = new Map<string, CacheEntry>();
 
 /** true = 上游 utf-8 直读的预览与真实内容一致，交给内置渲染器（零 UX 损失） */
 export function isUtf8FileCached(absPath: string): boolean {
-  let st: { mtimeMs: number };
+  let st: { mtimeMs: number; size: number };
   try {
     st = statSync(absPath);
   } catch {
@@ -151,7 +152,12 @@ export function isUtf8FileCached(absPath: string): boolean {
   }
   const gen = configGeneration();
   const cached = utf8Cache.get(absPath);
-  if (cached && cached.mtimeMs === st.mtimeMs && cached.gen === gen) return cached.upstreamPreviewIsSafe;
+  // 键用 mtime + size：Windows 的 mtime 只到毫秒粒度，同一毫秒内的两次写入会拿到完全
+  // 相同的 mtime，只比 mtime 就会读到过期结论（CI 的 windows runner 上实跟过）。
+  // 加 size 后同毫秒改写只要长度变了就能失效；连长度都没变的极端情况只会错一个
+  // 预览渲染分支（不影响任何字节），configGeneration / 重启会收拾。
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size && cached.gen === gen)
+    return cached.upstreamPreviewIsSafe;
   let buf: Buffer;
   try {
     buf = readFileSync(absPath);
@@ -161,7 +167,7 @@ export function isUtf8FileCached(absPath: string): boolean {
   const found = findNearestConfigSync(path.dirname(absPath));
   if (!found) {
     // 无配置 → 完全透传，与未装扩展一致（A-1）：上游预览天然是对的
-    utf8Cache.set(absPath, { mtimeMs: st.mtimeMs, gen, upstreamPreviewIsSafe: true });
+    utf8Cache.set(absPath, { mtimeMs: st.mtimeMs, size: st.size, gen, upstreamPreviewIsSafe: true });
     return true;
   }
   const rule = resolveFileRule(absPath, found);
@@ -174,7 +180,7 @@ export function isUtf8FileCached(absPath: string): boolean {
   // cjk / config(非 UTF-8) / utf16 → 必须走我们的预览（否则 GB 文件会渲染乱码 diff）
   const safe =
     v.kind === "utf8" || v.kind === "utf8-bom" || v.kind === "ascii" || v.kind === "binary" || v.kind === "unknown";
-  utf8Cache.set(absPath, { mtimeMs: st.mtimeMs, gen, upstreamPreviewIsSafe: safe });
+  utf8Cache.set(absPath, { mtimeMs: st.mtimeMs, size: st.size, gen, upstreamPreviewIsSafe: safe });
   if (utf8Cache.size > 512) {
     const firstKey = utf8Cache.keys().next().value;
     if (firstKey) utf8Cache.delete(firstKey);
