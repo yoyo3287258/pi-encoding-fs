@@ -215,6 +215,22 @@ describe("operations 包装（真 spawn，走 pi 自己的 bash 后端）", () =
     },
   });
 
+  it("回归（CI 实测出的真 bug）：OS 码页不能压过字节判定", () => {
+    // 英文 Windows / GitHub runner 的控制台码页是 437。早期版本把它当“判定优先级”
+    // 传进判定器，结果 GBK 字节被按 437 解成 `╢⌐╡Ñ…` 框线乱码 —— 比不转更糟。
+    // 现在码页只能待在 fallbackEncoding（仅当字节判不出来时）。
+    const bytes = iconv.encode(GB_TEXT, "GBK");
+    const t = createOutputTranscoder({
+      candidates: ["GB18030", "GBK", "GB2312", "Big5"],
+      priorityEncoding: "GBK",
+      fallbackEncoding: "cp437",
+    });
+    const out = collect(t, [bytes]);
+    expect(out.toString("utf-8")).toBe(GB_TEXT);
+    expect(t.stats().encoding).not.toBe("cp437");
+    expect(t.stats().basis).toContain("候选互校");
+  });
+
   it("transcodeBash 生效：GBK 字节 → UTF-8，且回显一条 shell 提示", async () => {
     const gbk = iconv.encode(GB_TEXT, "GBK");
     const rule = {

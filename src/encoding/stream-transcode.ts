@@ -23,8 +23,11 @@ export type TranscodeModeName = "passthrough" | "transcoded" | "binary-passthrou
 export interface OutputTranscoderOptions {
   /** 字节判定的候选链（来自配置的 autoCandidates） */
   candidates: string[];
-  /** 字节判定说"配置兜底"时用的编码（OS 码页或配置里的 sourceEncoding） */
+  /** 字节判定说"配置兜底"时用的编码（显式指定的编码名、项目 sourceEncoding 或 OS 码页）。
+   *  它**不能**参与歧义优先级（那是 priorityEncoding 的职责）。 */
   fallbackEncoding: string | null;
+  /** 歧义时的优先级编码 = 项目声明的 sourceEncoding（多字节候选适用时才会真的影响选择） */
+  priorityEncoding?: string | null;
   /**
    * 显式优先编码：配置写了具体编码名，或 `type <file>` 命中了该文件的读编码。
    * 只在字节不是合法 UTF-8 时生效（UTF-8 保护优先）。
@@ -94,7 +97,11 @@ export function createOutputTranscoder(opts: OutputTranscoderOptions): OutputTra
       return;
     }
     const v = classifyBuffer(sample, {
-      sourceEncoding: opts.fallbackEncoding ?? "GB18030",
+      // 注意分层：**只有项目声明的编码能当“歧义优先级”**。
+      // 早期版本把 OS 码页当 sourceEncoding 传进来，结果英文 Windows（码页 437/1252）
+      // 上 GBK 字节会被按 437 解成框线乱码 —— 比不转还糟（CI 实测发现）。
+      // 码页只配在“字节判不出来”时兜底（见下面 fallbackEncoding 分支）。
+      sourceEncoding: opts.priorityEncoding ?? opts.fallbackEncoding ?? "GB18030",
       autoCandidates: opts.candidates,
       force: false,
     });
@@ -112,6 +119,8 @@ export function createOutputTranscoder(opts: OutputTranscoderOptions): OutputTra
     // “字节判不出来”的情况：这里只是在选“把输出当什么编码显示”，不涉及磁盘，
     // 所以“用户显指令”高于“我们判不出来”（判不出来时旧行为是直接丢给模型看乱码）。
     if (v.kind === "unknown" && !opts.preferredEncoding) {
+      // “判不出来就不猜”是 P5 自己的原则（只有显式指令 —— 用户写了编码名、或 `type <file>`
+      // 命中该文件自己的读编码 —— 才能接管 unknown）。
       emitRaw("binary-passthrough", `输出判定为 unknown（不可判定），不转码`);
       return;
     }
@@ -126,7 +135,7 @@ export function createOutputTranscoder(opts: OutputTranscoderOptions): OutputTra
       basis = `字节判定为 ${enc}（候选互校）`;
     } else if (opts.fallbackEncoding) {
       enc = opts.fallbackEncoding;
-      basis = `字节判不出来，退到配置的 ${enc}`;
+      basis = `字节判不出来，退到 ${enc}（这是**推断**不是判定；输出里混着别的编码时会花码）`;
     }
     if (!enc) {
       emitRaw("binary-passthrough", "没有可用的目标编码，原样透传");

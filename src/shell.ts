@@ -146,12 +146,17 @@ export async function fileDumpEncodingForCommand(command: string, cwd: string): 
 export function makeTranscodingShellOperations(base: ShellOperationsLike, rule: ShellTranscodeRule): ShellOperationsLike {
   return {
     exec: async (command, cwd, options) => {
-      const preferred = rule.fileDump ? await fileDumpEncodingForCommand(command, cwd) : null;
       const explicit = typeof rule.mode === "string" && rule.mode !== "auto" ? rule.mode : null; // shellRuleFor 已保证 mode 不为 false
-      // 优先级在 transcoder 里：preferredEncoding（倒文件 = 该文件自己的读编码）> 字节判定 > 这个 fallback
-      const fallback = explicit ?? osConsoleEncoding() ?? rule.sourceEncoding;
+      // 三层优先级（实测教训：把 OS 码页当“判定优先级”会让英文 Windows（码页 437）
+      // 把 GBK 字节解成框线乱码，比不转更糟 —— CI 上跑出来的真 bug）：
+      //   ① 显式指令：`type <file>` 命中该文件自己的读编码，或用户直接把 transcodeBash 写成编码名
+      //   ② 字节判定（歧义优先级 = 项目声明的 sourceEncoding）
+      //   ③ 兜底：只在判定给出 config 时用得上；码页排最后
+      const preferred = (rule.fileDump ? await fileDumpEncodingForCommand(command, cwd) : null) ?? explicit;
+      const fallback = rule.sourceEncoding ?? osConsoleEncoding();
       const t = createOutputTranscoder({
         candidates: rule.autoCandidates,
+        priorityEncoding: rule.sourceEncoding,
         fallbackEncoding: fallback,
         preferredEncoding: preferred,
       });

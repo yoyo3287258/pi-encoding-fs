@@ -61,7 +61,11 @@ bash: { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: setti
 | 判定 `unknown` 且**没有**显式编码 | 原样透传（不猜） |
 | 判定 `unknown` 但**有**显式编码（`transcodeBash:"GBK"` 或 `type <file>` 命中该文件读编码） | 按显式编码解，能读出来的部分读出来，装不下的标 `lossy` 并在提示里说明 |
 
-优先级：**该文件自身的读编码（倒文件场景）> 字节判定 > OS 码页 > 配置 sourceEncoding**。
+优先级（**第一版把码页放错了位置，CI 上跑出真 bug，见 §4.3**）：① **显式指令**
+（`type`/`cat` 倒单文件时 = 该文件自己的读编码；或用户直接把 `transcodeBash` 写成编码名）
+② **字节判定**（候选互校；歧义时的优先级 = 项目声明的 `sourceEncoding`）
+③ **兜底**（`sourceEncoding` → OS 码页，码页排最后，且只能在判定给出 config 时用得上）。
+“字节判不出来（unknown）”时只有**显式指令**能接管，兜底值不行 —— P5 的“不猜”原则，有用例钉着。
 "显式编码"只影响**怎么显示**，不碰磁盘，所以这里允许它压倒 `unknown`；
 但**永远不压倒"这是合法 UTF-8"** —— UTF-8 保护在流式路径里同样成立。
 
@@ -105,6 +109,28 @@ bash: { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: setti
 
 这条值得单独记：它说明**"模型没抱怨"不等于"没坏"**，也说明 §3.3 的
 "响亮失败 > 静默可用"是站得住的 —— 如果读侧也这样静默修好，人和模型都会以为链路是干净的。
+
+### 4.3 CI 跑出来的第三个 bug：OS 码页拿到了“判定优先级”这个位置
+
+首次 CI（ubuntu + windows runner）红了，windows 那条报：
+
+```text
+AssertionError: expected '╢⌐╡”╖■╬±╩⌡╗»═Ω│╔ú¼▒¿╛»π╨╓╡=85.5' to be '订单服务初始化完成，报警阈值=85.5'
+```
+
+根因不在测试：`makeTranscodingShellOperations` 把 `fallbackEncoding`（= `osConsoleEncoding()`）
+直接当 `sourceEncoding` 传给了判定器，而 `sourceEncoding` 在判定器里的语义是**歧义优先级**。
+中文开发机 `chcp` = 936 → GB1830（GBK 超集）→ 碰巧正确；英文机器 / GitHub runner 的码页是
+**437** → GBK 字节被按 437 解成框线乱码，**比不开这个特性更糟**。
+
+修：`createOutputTranscoder` 拆成两个参数 —— `priorityEncoding`（= 项目声明，参与歧义优先级）
+与 `fallbackEncoding`（= 只在“判定给出 config”一侧用），并把显式指定的编码名改走
+`preferredEncoding` 通道。新增回归用例：`fallbackEncoding: "cp437"` + `priorityEncoding: "GBK"`
++ GBK 字节 → 必须仍出正确中文且 `encoding !== "cp437"`。
+
+教训比 bug 重要：**只在开发者机器上跑绿的“环境相关”逻辑不算验证过**。
+同一轮里另一条 A-7 计时用例（1MB < 60ms）也在 runner 上挂了（实测 84ms，共享 runner 能差 3~4 倍），
+现在改成 `process.env.CI ? 300 : 60`：本机仍跑严格值，CI 只做数量级防退化断言。
 
 ## 5. 提示回显
 
@@ -165,4 +191,4 @@ lossy/empty/截断 UTF-8 回归/杂散续字节/`incompleteUtf8Tail` 边界/倒�
 （含 `cat *.java`、`cat a b` 放弃）/配置开关与垃圾值不悄悄开启/operations 包装三条
 （转码、UTF-8 不改、异常也 flush）/OS 码页探测/settings 镜像两条。
 
-全套：`npx tsc --noEmit` 干净，`npx vitest run` **19 文件 / 241 用例**全绿。
+全套：`npx tsc --noEmit` 干净，`npx vitest run` **19 文件 / 242 用例**全绿。

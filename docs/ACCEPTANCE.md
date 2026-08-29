@@ -6,7 +6,7 @@
 
 ```bash
 npx tsc --noEmit                      # 无输出 = 干净
-npx vitest run                        # 19 文件 / 241 用例
+npx vitest run                        # 19 文件 / 242 用例
 ```
 
 ---
