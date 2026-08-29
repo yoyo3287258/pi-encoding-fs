@@ -181,12 +181,11 @@ node E:\tools\pi-encoding-fs\tools\scan-encoding.mjs . --damaged  # 已被毁掉
 
 | 事项 | 状态 |
 |---|---|
-| 代码 | 全在本地分支 `feat/deterministic-classify`（10 个提交），**未 push** |
-| fork 的 `main` | 还是上游 0.4.0 旧代码 → **别装 `@main`** |
-| tag / GitHub release | 无（等确认后建 `v0.5.0`） |
+| 代码 | **已 push** 到 fork 分支 `feat/deterministic-classify`（比 `main` 多 15 个提交） |
+| fork 的 `main` | 还是上游 0.4.0 旧代码 → **现在装 `@main` 会拿到会毁 PNG 的老逻辑** |
+| tag / GitHub release | 无（等你确认后建 `v0.5.0`，建完就能用 `@v0.5.0` 安装） |
 | npm 发布 | 未做（包名 `pi-encoding-fs` 已被上游占用，`0.5.0` 版本号会撞；需要先决定改名或协商） |
-| CI（验收 A-9） | 因此还没真跑过绿 —— 这是唯一没勾掉的验收项 |
+| CI（验收 A-9） | ✅ **双 OS 跑绿**（run 33231594192），证据见 [ACCEPTANCE.md](./ACCEPTANCE.md) |
 
-要走路线 A，需要我做：push 分支 →（可选）开 fork 内 PR 并合并到 `main` → 打 `v0.5.0` tag。
-这三步按需求文档 §0.5.4 都要你点头，我在等一句授权。
-在那之前，另一台机器请用**路线 B**。
+要走路线 A，还差**合进 `main` 或打 tag**（现在可以直接用 commit / 分支名装，只是不够稳定）：
+开 PR、合并、打 tag 这三步按需求文档 §0.5.4 需要你点头。在那之前，另一台机器请用**路线 B**。

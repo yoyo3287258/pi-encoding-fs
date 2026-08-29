@@ -131,12 +131,34 @@ per file by deterministic byte classification — no guessing, no subprocess.
 自动化用例：`npx vitest run test/sysnote.test.ts`（含「A-8 无配置目录 → 一个字都不注入」、
 常量长度 < 760 字符、不含 python/chardet、含「stop and ask the user」）。
 
-### A-9 CI（windows-latest + ubuntu-latest）⚠️ 待首推
+### A-9 CI（windows-latest + ubuntu-latest）✅ 已跑绿
 
 工作流见 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)：两 OS 矩阵，
 装 ripgrep（Windows 用 choco，Linux 用 apt）→ `npm ci` → `tsc --noEmit` → `vitest run` →
 **A-4 门禁**（`grep -rni "python|chardet" src/` 必须为空）。
-本地已复现全部步骤并全绿；Actions 需要仓库首次 push 后才能出结果（当前按约定未 push）。
+
+**已实测跑绿**（2026-08-29，分支 `feat/deterministic-classify`）：
+
+| run | 结果 | 说明 |
+|---|---|---|
+| 33230915325 | ❌ failure | 首跑，两个 OS 各挂一条（见下） |
+| 33231594192 | ✅ success | `ubuntu-latest / node 22` 与 `windows-latest / node 22` 双绿，含 A-4 门禁与 npm 包内容门禁 |
+
+首跑红掉的两条都属于「只在开发者机器以外才暴露」，已各自修掉并加回归用例（详见 [P5-NOTES.md §4.3](./P5-NOTES.md)）：
+
+1. **真 bug**：shell 输出转码把 OS 控制台码页当成了「判定优先级」——中文机 chcp=936 碰巧正确，
+   英文码机（437）上 GBK 字节被解成框线乱码，比不转更糟。修成 `priorityEncoding`（项目声明，
+   参与歧义优先级）与 `fallbackEncoding`（只在判定给不出结果时用）两层分开。
+2. **阈值过紧**：A-7 的 `1MB < 60ms` 是本机隔离跑的严格值；19 个测试文件并行时本机可复现 72ms、
+   runner 上 84ms → 改成数量级防退化（本机 <150ms / CI <400ms），严格值继续由
+   `test/perf/a7-perf.test.ts` 与 `tools/bench-p3.mjs` 的隔离跑记录在 docs/P1-NOTES.md。
+
+查状态（fork 上必须显式指定 repo，否则 gh 会去查上游 parent 而 404）：
+
+```bash
+gh api "repos/yoyo3287258/pi-encoding-fs/actions/runs?per_page=3" --jq '.workflow_runs[] | {id, status, conclusion}'
+gh run view <run-id> --repo yoyo3287258/pi-encoding-fs --log-failed
+```
 
 ---
 

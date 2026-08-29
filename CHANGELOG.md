@@ -39,10 +39,13 @@
     `type`/`cat`/`more`/`less`/`head`/`tail`/`Get-Content` 倒单文件时直接用**该文件自己的读编码**。
   - 注入点是 `createBashToolDefinition(cwd,{operations})` 的 `onData` —— 必须在
     pi 的 `OutputAccumulator`（非 fatal TextDecoder，不可逆）之前做完；
-    `src/encoding/stream-transcode.ts` 用 iconv 的 stateful decoder 处理**跳 chunk 的半个汉字**。
+    `src/encoding/stream-transcode.ts` 用 iconv 的 stateful decoder 处理**跨 chunk 的半个汉字**。
   - 保证：合法 UTF-8 / 二进制 / 不可判定的输出**永远原样透传**；只有真转了才多一行
     `[encoding] bash 输出已由 GBK 转成 UTF-8…`（带“这个编码是谁定的”的依据 + lossy 提醒）。
-  - `false` 时连 `bash` 工具都不覆盖（零行为变化）；开启后**需重启 pi** 生效。
+  - 编码优先级（CI 首跑纠正过一次）：**显式指令**（`transcodeBash` 写编码名 / `type <file>` 用该文件
+    自己的读编码）> **字节判定**（歧义优先级 = `sourceEncoding`）> **兜底**。OS 控制台码页**不能**
+    当判定优先级 —— 英文码机（437）上会把 GBK 解成框线乱码，比不转更糟（见 docs/P5-NOTES.md §4.3）。
+  - `false` 时连 `bash` 工具都不覆盖（零行为变化）；开启后**需重启 pi** 生效（工具注册只在启动时读一次）。
   - 覆盖 bash 工具时从 `settings.json` 镜像用户的 `shellPath` / `shellCommandPrefix`
     （`src/pi-settings.ts`）—— 不这么做就是行为回归。
 - 工具：`tools/scan-encoding.mjs`（`npm run scan` — 全仓编码画像 + 已损坏文件清单 + CSV）、
