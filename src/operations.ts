@@ -26,6 +26,7 @@ import {
 import { classifyBuffer, describeVerdict, invalidateClassifyCache } from "./encoding/classify";
 import { detectLineEnding, restoreLineEndings, type LineEndingStyle } from "./encoding/line-endings";
 import { pushEncodingNote } from "./notify";
+import { hintOnNoConfigRead, hintOnNoConfigWrite } from "./legacy-hint";
 import {
   detectSupportedImageMimeType,
   detectSupportedImageMimeTypeFromFile,
@@ -44,7 +45,12 @@ async function readAsUtf8Buffer(absPath: string): Promise<Buffer> {
   if (detectSupportedImageMimeType(raw)) return raw;
 
   const plan = await resolveReadPlan(absPath);
-  if (!plan) return raw; // 无配置 → 逐字节透传（§8 A-1）
+  if (!plan) {
+    // 无配置 → 逐字节透传（§8 A-1）。但 pi 内置 read 是**有损不报错**的，
+    // 所以这里只寄存一条提示（不改字节、不改返回值）—— 方案乙。
+    await hintOnNoConfigRead(absPath, raw);
+    return raw;
+  }
   // 非致命提示不进文件内容（会被 edit 当基线写回），只寄存给 P3 的 tool_result 回显
   for (const w of plan.warnings) pushEncodingNote(absPath, w);
   if (plan.verdict.kind === "binary") return raw; // 不转码；pi 自己的二进制分支处理
@@ -222,6 +228,8 @@ async function writeEncodedLocked(
   if (!plan.encoding) {
     // 完全透传：用与 pi 内置一致的 writeFile（不提前新建 inode、不改换文件）→
     // 保证 §8 A-1「无配置目录行为与未装扩展逐字节一致」。原子替换只用于我们真的转码时。
+    // plan.rule === null 即“本目录真的没有配置”（有配置但不需转码时 rule 非空）。
+    if (plan.rule === null) await hintOnNoConfigWrite(absPath); // 只说话，不拦（方案乙）
     await writeFile(absPath, utf8content, "utf-8");
     afterWrite(absPath);
     return;

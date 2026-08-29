@@ -10,7 +10,7 @@
 > | 非 GB 编码 | `resolve.ts` 里非 GB 一律短路成 UTF-8，`ISO-8859-1`/`Big5` 配置被忽略 | **P1 起任意 iconv 编码可用 + `force`** |
 > | 不可映射字符 | 静默写 `0x3F`（生僻字丢失）；UTF-8 BOM 文件按 GB 写出头部变 `?` | **P2 起三道硬闸门：报错 / 回读自校验 / 拿不准就不写** |
 > | 中文 `grep` | 单趟 UTF-8 搜索 —— 在真实 GBK 工程里基本搜不到（实测 `创建时间` 在 **610** 个 GBK java 文件里，单趟只看得到 **2** 个） | **P3 起多趟编码搜索 + 逐文件判定复核** |
-> | 全局副作用 | 无条件覆盖 4 个工具 + 无条件往系统提示里塞话（污染非 GBK 项目） | **无配置树整体委托内置、系统提示零注入（A-1 / A-8）** |
+> | 全局副作用 | 无条件覆盖 4 个工具 + 无条件往系统提示里塞话（污染非 GBK 项目） | **无配置树整体委托内置、系统提示零注入（A-1 / A-8）；但无配置下碰到非 UTF-8 文件会多一句 `[encoding]` 提示（字节不改）** |
 >
 > 因此**不要** `pi install npm:pi-encoding-fs`，请用本仓库（项目级安装，理由见下方 Requirements 与需求文档 §5.1/§5.2）。
 > 本 fork 的包名是 `@yoyo3287258/pi-encoding-fs`（`0.5.0`）；尚未发布到 npm，现在只能用本地路径或 git 安装。
@@ -117,7 +117,11 @@ the project-trust prompt in later sessions, or pass `--approve` for non-interact
 
 Then create the config — **this step is not optional**, because with no config the extension
 stays inert and pi's own `read` decodes GB bytes with `buffer.toString("utf-8")`: lossy and
-**silent** (you get `????????`, not an error, and the model will happily “fix” it):
+**silent** (you get `????????`, not an error, and the model will happily “fix” it).
+When we detect that situation we do **not** change a single byte (that's A-1), but we do say so
+— reading or writing a non-UTF-8 file in a config-less tree adds one `[encoding]` note telling
+you the file's real encoding, and on write it also hands you the `svn revert` / `git checkout --`
+command to undo the damage:
 
 ```bash
 node <package-dir>/tools/scan-encoding.mjs . --init --dry-run   # 先看建议
@@ -240,7 +244,7 @@ Tomcat URI 编码、native2ascii、JDBC 参数、以及 SVN 上所有同事的�
 详见上面「三条路线」。
 
 **问：我已经有 UTF-8 项目，装它会变慢吗？**
-答：不会变错。没配置 → 完全透传且不注入系统提示（A-1/A-8）。有配置且文件都是 UTF-8 →
+答：不会变错。没配置 → 字节完全透传、系统提示零注入（A-1/A-8）；只有碰到**非 UTF-8 文件**时才会多一句 `[encoding]` 提示（方案乙，因为 pi 内置读对这种文件是静默有损的）。有配置且文件都是 UTF-8 →
 每个文件多一次字节判定（实测新增延迟 0.78～1.27ms，带缓存）。想完全避开就把配置文件删了。
 
 **问：为什么 `grep` 不直接用一个编码？**

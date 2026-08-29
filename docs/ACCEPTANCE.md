@@ -6,7 +6,7 @@
 
 ```bash
 npx tsc --noEmit                      # 无输出 = 干净
-npx vitest run                        # 18 文件 / 230 用例
+npx vitest run                        # 19 文件 / 241 用例
 ```
 
 ---
@@ -147,7 +147,7 @@ per file by deterministic byte classification — no guessing, no subprocess.
 
 | # | 发现 | 对验收的影响 | 处理 |
 |---|---|---|---|
-| 1 | **pi 0.84.3 内置 `read` 对非法 UTF-8 不报错**。`dist/core/tools/read.js:196` 就是 `buffer.toString("utf-8")`，Node 这个方法是**有损**的 | 需求 §3.4 / A-3 假设“内置会报错而不是给乱码”→ 不成立。实测无配置目录读 GBK 得到 `/** ???????? */`，而且模型会自己“补”成通顺中文并声称是原样引用 | A-1（无配置=与未装扩展一致）**继续成立且优先**，所以不改字节行为；改用两道非破坏性手段兑住：① `--init` 变成安装必做步骤（CONFIG-GUIDE ①②、INSTALL §4.1 写明不做等于没装）；② 若要让“无配置也响亮失败”，需一次产品决策（会偏离 A-1）——**已标出待用户拍板** |
+| 1 | **pi 0.84.3 内置 `read` 对非法 UTF-8 不报错**。`dist/core/tools/read.js:196` 就是 `buffer.toString("utf-8")`，Node 这个方法是**有损**的 | 需求 §3.4 / A-3 假设“内置会报错而不是给乱码”→ 不成立。实测无配置目录读 GBK 得到 `/** ???????? */`，而且模型会自己“补”成通顺中文并声称是原样引用 | A-1（无配置=与未装扩展一致）**继续成立且优先**，所以不改字节行为；改用两道非破坏性手段兑住：① `--init` 变成安装必做步骤（CONFIG-GUIDE ①②、INSTALL §4.1 写明不做等于没装）；② **方案乙已实现**（用户 2026-08-28 拍板）：字节与返回值一个不改（A-1 仍成立），但读/写非 UTF-8 文件时各寄存一条提示，写提示给出 svn revert / git checkout -- 的补救动作；新增 test/no-config-hint.test.ts 11 用例 |
 | 2 | **`pi install <本地路径>` 不会装依赖**（只有 git 源会跑 `npm install`） | 文档里原先写的本地路径安装步骤照做会直接加载失败 | `docs/INSTALL.md` 写成实测路线 + 原文报错；README Install 一节同步 |
 | 3 | **`--init` 参数当时根本不存在**（README/CONFIG-GUIDE 都写了它）；而早先在真实工程里那份配置是手写落盘的，所以没人发现 | 文档承诺了一个不存在的功能，新用户会“以为生成了配置” | 实现为一等公民（声明优先 / 最窄覆盖 / 矛盾声明不采纳 / `--dry-run` / 不默覆盖），并加 `test/scan-init.test.ts` 7 用例（子进程真跑）钉住 |
 

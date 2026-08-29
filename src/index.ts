@@ -22,6 +22,7 @@ import { readPiShellSettings } from "./pi-settings";
 import { makeTranscodingShellOperations } from "./shell";
 import { systemNoteFor } from "./sysnote";
 import { clearEncodingNotes, drainEncodingNotes, drainShellNotes, pushEncodingNote, notesToSuffix } from "./notify";
+import { clearLegacyHints } from "./legacy-hint";
 
 type AnyText = { type: "text"; text: string };
 
@@ -72,17 +73,20 @@ export default function (pi: ExtensionAPI) {
     for (const w of shellRule.warnings) pushEncodingNote(cwd, w);
   }
 
-  // Caches: config dir cache + classify cache + UTF-8 preview cache + pending notes.
+  // Caches: config dir cache + classify cache + UTF-8 preview cache + pending notes
+  //         + 「无配置静默有损」的一次性提示去重表。
   pi.on("session_start", async () => {
     clearConfigCache();
     clearUtf8Cache();
     clearEncodingNotes();
+    clearLegacyHints();
   });
   pi.on("resources_discover", async (event) => {
     if (event.reason === "reload") {
       clearConfigCache();
       clearUtf8Cache();
       clearEncodingNotes();
+      clearLegacyHints(); // 用户可能刚照提示跑了 --init → 允许重新探一次
     }
   });
 
