@@ -144,6 +144,7 @@ per file by deterministic byte classification — no guessing, no subprocess.
 | 33230915325 | ❌ failure | 首跑，两个 OS 各挂一条（见下） |
 | 33231594192 | ✅ success | `ubuntu-latest / node 22` 与 `windows-latest / node 22` 双绿，含 A-4 门禁与 npm 包内容门禁 |
 | 33232057091 | ❌ failure | 只改了文档却 windows 红 → **偶发**：edit-preview 的预览路由缓存只比 `mtimeMs`，Windows 的 mtime 只到毫秒粒度，同一毫秒内改写会读到过期结论 |
+| 33232316041 | ✅ success | 上面三条修完在 `aaa30d0` 上双 OS 复跑全绿 —— **A-9 以此 run 为准** |
 
 三轮里红过的三条都属于「只在开发者机器以外才暴露」，已各自修掉并加回归 / 变确定性
 （第一条的详述见 [P5-NOTES.md §4.3](./P5-NOTES.md)）：
