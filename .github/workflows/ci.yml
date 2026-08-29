@@ -1,0 +1,82 @@
+# .github/workflows/ci.yml
+# 需求文档 §8 A-9：windows-latest + ubuntu-latest 跑通 vitest + tsc。
+# 上游仓库没有任何 workflow，本文件由 fork 新增。
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        node: ["22"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # test/grep.test.ts 断言 findRg() 可用（真实调用 rg），CI 必须先装 ripgrep。
+      - name: Install ripgrep (ubuntu)
+        if: runner.os == 'Linux'
+        run: command -v rg || (sudo apt-get update -y && sudo apt-get install -y ripgrep)
+
+      - name: Install ripgrep (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
+            choco install ripgrep -y --no-progress
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + `
+              [System.Environment]::GetEnvironmentVariable("Path","User")
+          }
+
+      - name: Show toolchain
+        shell: bash
+        run: |
+          node -v; npm -v; rg --version | head -1
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npx vitest run
+
+      # §8 A-4 的 CI 侧守门：P1 之后 src/ 里不允许再出现 python/chardet。
+      - name: No python dependency (P1+)
+        shell: bash
+        run: |
+          if grep -rniE "python|chardet" src/; then
+            echo "::error::src/ 中仍存在 python/chardet 引用（违反 §8 A-4）"
+            exit 1
+          fi
+          echo "OK: src/ 零 python 引用"
+
+      # 发布物完整性：pi 加载的是 src/index.ts，package.json 的 files 漏了东西就等于装了个空包。
+      - name: Package contents sanity
+        shell: bash
+        run: |
+          npm pack --dry-run > pack.txt 2>&1 || { cat pack.txt; exit 1; }
+          for f in src/index.ts src/grep.ts src/encoding/classify.ts README.md CHANGELOG.md LICENSE docs/CONFIG-GUIDE.md; do
+            grep -q "$f" pack.txt || { echo "::error::pack 里缺少 $f（检查 package.json files）"; exit 1; }
+          done
+          if grep -q "node_modules/" pack.txt; then
+            echo "::error::pack 里混进了 node_modules"; exit 1
+          fi
+          grep -E "total files|package size" pack.txt

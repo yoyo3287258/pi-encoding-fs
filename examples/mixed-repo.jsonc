@@ -1,0 +1,7 @@
+// 混合仓库：整仓 UTF-8，只有一个历史模块是 GBK
+// ⚠️ 不要用这种写法处理「同一目录里 GBK 与 UTF-8 混住」的情况 —— glob 表达不了文件级差异，
+//    那种项目请只写 sourceEncoding，让逐文件字节判定接管（见 docs/CONFIG-GUIDE.md §3.3）
+{
+  "sourceEncoding": "UTF-8",
+  "overrides": [{ "pattern": "legacy-gbk/**", "encoding": "GBK" }]
+}

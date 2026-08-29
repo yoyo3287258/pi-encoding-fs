@@ -1,53 +1,417 @@
-// src/config.ts
-import { readFile } from "node:fs/promises";
+// src/config.ts — schema v2（需求文档 §4），向后兼容上游 v1。
+//
+// 与上游的差异：
+//  * 新增 writeEncoding / readStrategy / unmappable / verifyWrite / autoCandidates /
+//    protectUtf8 / force；`confidenceThreshold` 保留解析但**不再使用**（旧的启发式
+//    置信度打分器已删除，现在只有字节级确定性判定）。
+//  * overrides 的规则键支持 v2 的 `encoding` 与 v1 的 `sourceEncoding`（后者兼容旧配置）。
+//  * 允许 `.encoding-converter.json` 写注释（§4 的示例本身就是 jsonc）。
+//  * 校验失败不再静默丢弃：错误与可疑配置会挂在 `FoundConfig.warnings` 上，
+//    由 read 结果输出一行提示（把「以为生效其实没生效」变成可见信息）。
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
 import micromatch from "micromatch";
+import {
+  UnsupportedEncodingError,
+  isGBEncoding,
+  isSingleByteEncoding,
+  isStatefulEncoding,
+  normalizeEncoding,
+} from "./encoding/converter";
+import { DEFAULT_AUTO_CANDIDATES } from "./encoding/classify";
+
+export const CONFIG_FILENAME = ".encoding-converter.json";
+
+export type ReadStrategy = "auto" | "config";
+export type UnmappableStrategy = "error" | "escape" | "drop-to-gb18030";
 
 export interface OverrideRule {
   pattern: string;
-  sourceEncoding: string;
+  /** schema v2 */
+  encoding?: string;
+  /** schema v1（上游用的键名） */
+  sourceEncoding?: string;
+  writeEncoding?: string;
+  /** 跳过字节判定，严格按本规则的 encoding 读写（单字节编码只能这样用，性质 P-6） */
+  force?: boolean;
+  readStrategy?: ReadStrategy;
+  unmappable?: UnmappableStrategy;
+  autoCandidates?: string[];
+  protectUtf8?: boolean;
+  verifyWrite?: boolean;
 }
 
 export interface EncodingConfig {
   sourceEncoding: string;
-  confidenceThreshold: number;
+  writeEncoding?: string;
+  readStrategy?: ReadStrategy;
+  unmappable?: UnmappableStrategy;
+  verifyWrite?: boolean;
+  protectUtf8?: boolean;
+  autoCandidates?: string[];
+  /** §4：保留解析、忽略使用（不让上游已有配置报错） */
+  confidenceThreshold?: number;
+  /**
+   * P5（§5.5，**实验特性，默认关闭**）：把 `bash`/`powershell` 的 stdout/stderr 按编码转成 UTF-8。
+   *  - `false`（默认）：完全不碰，与未装扩展逐字节一致。
+   *  - `true` / `"auto"`：先用确定性字节判定（跟读文件同一套 `classifyBuffer`），
+   *    判不出来再退到操作系统控制台码页（Windows `chcp` / POSIX `LC_*`）。
+   *  - `"<编码名>"`（如 `"GBK"`）：跳过码页探测，直接指定第二候选。
+   * 合法 UTF-8 输出永远原样透传；判定为 binary 的输出永远不碰。
+   */
+  transcodeBash?: BashTranscodeMode;
+  /**
+   * P5：`type`/`cat`/`Get-Content` 这类「把文件原样倒出来」的命令，
+   * 优先用**该文件自己的读编码**（比猜控制台码页准得多）。仅在 transcodeBash 生效时有意义。
+   */
+  bashFileDump?: boolean;
   overrides?: OverrideRule[];
+}
+
+/** `transcodeBash` 的合法值：false | true(="auto") | "auto" | 具体编码名 */
+export type BashTranscodeMode = false | "auto" | string;
+
+/** 目录级缓存的条目：连同 config 的 mtime/size 一起存，配置文件被改了就重读（T-14）。 */
+interface CacheEntry {
+  config: EncodingConfig;
+  warnings: string[];
+  mtimeMs: number;
+  size: number;
 }
 
 export interface FoundConfig {
   config: EncodingConfig;
   configDir: string;
+  /** 解析/校验期间的非致命问题（未知编码名、单字节编码未 force、readStrategy 冲突等） */
+  warnings?: string[];
 }
 
-const DEFAULTS = { sourceEncoding: "GB18030", confidenceThreshold: 0.8 };
+/** 合并「就近配置 + 最特异 override」之后、针对单个文件的完整决策上下文（§3.1 的 cfg 入参）。 */
+export interface ResolvedConfig {
+  configDir: string;
+  /** 该作用域的读声明（歧义优先级 + “字节说不了话”时的默认编码） */
+  sourceEncoding: string;
+  /** 新建 / 纯 ASCII / force-undecidable 文件的写目标 */
+  writeEncoding: string;
+  /** 用户显式表达的改写意图（writeEncoding ≠ 该作用域读声明）；null = 无，已判定的文件保持原编码 */
+  writeIntent: string | null;
+  readStrategy: ReadStrategy;
+  unmappable: UnmappableStrategy;
+  verifyWrite: boolean;
+  protectUtf8: boolean;
+  autoCandidates: string[];
+  force: boolean;
+  /** 命中的 override pattern（诊断用） */
+  matchedPattern: string | null;
+  warnings: string[];
+}
 
-// dir -> EncodingConfig | null (checked, none found in this exact dir)
-const dirCache = new Map<string, EncodingConfig | null>();
+interface ConfigDefaults {
+  sourceEncoding: string;
+  readStrategy: ReadStrategy;
+  unmappable: UnmappableStrategy;
+  verifyWrite: boolean;
+  protectUtf8: boolean;
+  autoCandidates: string[];
+  confidenceThreshold: number;
+  transcodeBash: BashTranscodeMode;
+  bashFileDump: boolean;
+}
+
+const DEFAULTS: ConfigDefaults = {
+  sourceEncoding: "GB18030",
+  readStrategy: "auto",
+  unmappable: "error",
+  verifyWrite: true,
+  protectUtf8: true,
+  autoCandidates: [...DEFAULT_AUTO_CANDIDATES],
+  confidenceThreshold: 0.8,
+  transcodeBash: false,
+  bashFileDump: true,
+};
+
+// dir -> 已检查（可能为 null = 这层没有配置）
+const dirCache = new Map<string, CacheEntry | null>();
+
+/** 缓存代数：clearConfigCache() 时 +1，给同步缓存（edit 预览）做失效依据 */
+let _configGen = 0;
+
+export function configGeneration(): number {
+  return _configGen;
+}
 
 export function clearConfigCache(): void {
   dirCache.clear();
+  _configGen++;
 }
 
-async function loadConfigInDir(dir: string): Promise<EncodingConfig | null> {
-  if (dirCache.has(dir)) return dirCache.get(dir) ?? null;
-  const p = path.join(dir, ".encoding-converter.json");
+/**
+ * loadConfigInDir 的同步版（同一个 dirCache）。给 `edit` 的 renderCall 用 ——
+ * pi 的渲染链路是同步的，拿不到 async 配置解析（§5.3）。
+ */
+function loadConfigInDirSync(dir: string): CacheEntry | null {
+  const cached = dirCache.get(dir);
+  const p = path.join(dir, CONFIG_FILENAME);
+  let st;
   try {
-    const parsed = JSON.parse(await readFile(p, "utf-8"));
-    const config: EncodingConfig = { ...DEFAULTS, ...parsed };
-    dirCache.set(dir, config);
-    return config;
+    st = statSync(p);
   } catch {
     dirCache.set(dir, null);
     return null;
   }
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached;
+  let text: string;
+  try {
+    text = readFileSync(p, "utf-8");
+  } catch {
+    dirCache.set(dir, null);
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonComments(text));
+  } catch (e) {
+    const entry: CacheEntry = {
+      config: { ...DEFAULTS },
+      warnings: [`${p} 不是合法 JSON（${(e as Error).message}）；本次按默认值处理，请修正该文件`],
+      mtimeMs: st.mtimeMs,
+      size: st.size,
+    };
+    dirCache.set(dir, entry);
+    return entry;
+  }
+  const { config, warnings } = validateConfig((parsed ?? {}) as Record<string, unknown>, p);
+  const entry: CacheEntry = { config, warnings, mtimeMs: st.mtimeMs, size: st.size };
+  dirCache.set(dir, entry);
+  return entry;
+}
+
+/** findNearestConfig 的同步版（共用 dirCache） */
+export function findNearestConfigSync(startDir: string): FoundConfig | null {
+  let cur = path.resolve(startDir);
+  const warnings: string[] = [];
+  while (true) {
+    const entry = loadConfigInDirSync(cur);
+    if (entry) {
+      if (entry.warnings.length) warnings.push(...entry.warnings);
+      return { config: entry.config, configDir: cur, warnings };
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
+}
+
+/** 容忍 `//` 行注释与 `/* *\/` 块注释（不吞字符串字面量里的内容）。 */
+export function stripJsonComments(src: string): string {
+  let out = "";
+  let inStr = false;
+  let quote = "";
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (inStr) {
+      out += c;
+      if (c === "\\") {
+        out += n ?? "";
+        i++;
+        continue;
+      }
+      if (c === quote) inStr = false;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inStr = true;
+      quote = c;
+      out += c;
+      continue;
+    }
+    if (c === "/" && n === "/") {
+      while (i < src.length && src[i] !== "\n") i++;
+      out += "\n";
+      continue;
+    }
+    if (c === "/" && n === "*") {
+      i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++;
+      i++;
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+/**
+ * P5：把用户写的 `transcodeBash` 归一。注意**垃圾值默认关**（这项是实验特性，
+ * 写错了就该保持未装载时的行为，而不是默默开始改命令输出）。
+ */
+export function normalizeBashMode(raw: unknown, where: string, warnings: string[]): BashTranscodeMode {
+  if (raw === undefined || raw === false || raw === "false" || raw === "off") return false;
+  if (raw === true || raw === "auto" || raw === "on") return "auto";
+  if (typeof raw === "string") {
+    try {
+      const n = normalizeEncoding(raw);
+      if (n === "UTF-8") {
+        warnings.push(`${where}: transcodeBash="${raw}" 等于目标就是 UTF-8（本来就不转）→ 按 false 处理`);
+        return false;
+      }
+      if (isStatefulEncoding(n)) {
+        warnings.push(`${where}: transcodeBash="${raw}" 是转义序列编码，无法对任意输出做无损判定 → 改用 "auto"`);
+        return "auto";
+      }
+      return n;
+    } catch {
+      warnings.push(`${where}: transcodeBash="${raw}" 不是可用编码名 → 改用 "auto"`);
+      return "auto";
+    }
+  }
+  warnings.push(`${where}: transcodeBash 只接受 false/"auto"/编码名，收到 ${JSON.stringify(raw)} → 按 false（关闭）处理`);
+  return false;
+}
+
+function validateConfig(parsed: Record<string, unknown>, where: string): { config: EncodingConfig; warnings: string[] } {
+  const warnings: string[] = [];
+  const merged = { ...DEFAULTS, ...(parsed ?? {}) } as EncodingConfig;
+  try {
+    merged.sourceEncoding = normalizeEncoding(String(merged.sourceEncoding ?? "GB18030"));
+  } catch (e) {
+    warnings.push(`${where}: sourceEncoding "${merged.sourceEncoding}" 不可用（${(e as Error).message}）→ 按 GB18030 处理`);
+    merged.sourceEncoding = "GB18030";
+  }
+  if (merged.writeEncoding) {
+    try {
+      merged.writeEncoding = normalizeEncoding(String(merged.writeEncoding));
+    } catch (e) {
+      warnings.push(`${where}: writeEncoding "${merged.writeEncoding}" 不可用 → 回退 sourceEncoding`);
+      merged.writeEncoding = merged.sourceEncoding;
+    }
+  }
+  if (merged.readStrategy !== "auto" && merged.readStrategy !== "config") {
+    warnings.push(`${where}: readStrategy "${merged.readStrategy}" 非法 → 用 "auto"`);
+    merged.readStrategy = "auto";
+  }
+  if (merged.unmappable !== "error" && merged.unmappable !== "escape" && merged.unmappable !== "drop-to-gb18030") {
+    warnings.push(`${where}: unmappable "${merged.unmappable}" 非法 → 用 "error"`);
+    merged.unmappable = "error";
+  }
+  if (typeof merged.verifyWrite !== "boolean") merged.verifyWrite = true;
+  if (typeof merged.protectUtf8 !== "boolean") merged.protectUtf8 = true;
+  if (!Array.isArray(merged.autoCandidates) || merged.autoCandidates.length === 0) {
+    merged.autoCandidates = [...DEFAULT_AUTO_CANDIDATES];
+  } else {
+    const kept: string[] = [];
+    for (const c of merged.autoCandidates) {
+      let n: string;
+      try {
+        n = normalizeEncoding(String(c));
+      } catch {
+        warnings.push(`${where}: autoCandidates 里的 "${c}" 不是可用编码，已忽略（自动判定只支持 ${DEFAULT_AUTO_CANDIDATES.join("/")}）`);
+        continue;
+      }
+      if (isSingleByteEncoding(n) || isStatefulEncoding(n)) {
+        warnings.push(
+          `${where}: autoCandidates 不允许包含 "${n}"（单字节/转义序列编码对任意字节都能无损回环，性质 P-6）—— 只能在 overrides 里用 "force": true 指定`,
+        );
+        continue;
+      }
+      kept.push(n);
+    }
+    if (kept.length === 0) {
+      warnings.push(`${where}: autoCandidates 全部无效 → 回退默认候选链`);
+      merged.autoCandidates = [...DEFAULT_AUTO_CANDIDATES];
+    } else merged.autoCandidates = kept;
+  }
+  if (parsed.confidenceThreshold === undefined) merged.confidenceThreshold = DEFAULTS.confidenceThreshold;
+  // P5：transcodeBash / bashFileDump 只在根级有意义（命令输出不属于某个文件），不进 overrides
+  merged.transcodeBash = normalizeBashMode(parsed.transcodeBash, where, warnings);
+  if (parsed.bashFileDump === undefined) merged.bashFileDump = DEFAULTS.bashFileDump;
+  else if (typeof parsed.bashFileDump !== "boolean") {
+    warnings.push(`${where}: bashFileDump 必须是 true/false → 用默认 true`);
+    merged.bashFileDump = true;
+  } else merged.bashFileDump = parsed.bashFileDump;
+  if (merged.overrides) {
+    merged.overrides = merged.overrides.map((r) => {
+      const rule: OverrideRule = { ...r };
+      const label = r.encoding ?? r.sourceEncoding;
+      if (!label) {
+        warnings.push(`${where}: override "${r.pattern}" 缺少 encoding/sourceEncoding，已忽略`);
+        return rule;
+      }
+      try {
+        const n = normalizeEncoding(String(label));
+        if (r.encoding !== undefined) rule.encoding = n;
+        else rule.sourceEncoding = n;
+        if ((isSingleByteEncoding(n) || isStatefulEncoding(n)) && rule.force !== true) {
+          warnings.push(
+            `${where}: override "${r.pattern}" 的 ${n} 在字节层无法判定，需要 "force": true 才会生效（性质 P-6 / §7）`,
+          );
+        }
+      } catch (e) {
+        warnings.push(`${where}: override "${r.pattern}" 的编码 "${label}" 不可用（${(e as UnsupportedEncodingError).message}）`);
+      }
+      if (rule.writeEncoding) {
+        try {
+          rule.writeEncoding = normalizeEncoding(rule.writeEncoding);
+        } catch {
+          warnings.push(`${where}: override "${r.pattern}" 的 writeEncoding 不可用，已回退`);
+          rule.writeEncoding = undefined;
+        }
+      }
+      return rule;
+    });
+  }
+  return { config: merged, warnings };
+}
+
+async function loadConfigInDir(dir: string): Promise<CacheEntry | null> {
+  const cached = dirCache.get(dir);
+  const p = path.join(dir, CONFIG_FILENAME);
+  let st;
+  try {
+    st = await stat(p);
+  } catch {
+    dirCache.set(dir, null);
+    return null;
+  }
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached;
+  let text: string;
+  try {
+    text = await readFile(p, "utf-8");
+  } catch {
+    dirCache.set(dir, null);
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonComments(text));
+  } catch (e) {
+    // 语法错误：明确记 warning，但仍把「这里存在配置」当真——否则用户改坏配置后扩展静默退回透传。
+    const entry: CacheEntry = {
+      config: { ...DEFAULTS },
+      warnings: [`${p} 不是合法 JSON（${(e as Error).message}）；本次按默认值处理，请修正该文件`],
+      mtimeMs: st.mtimeMs,
+      size: st.size,
+    };
+    dirCache.set(dir, entry);
+    return entry;
+  }
+  const { config, warnings } = validateConfig((parsed ?? {}) as Record<string, unknown>, p);
+  const entry: CacheEntry = { config, warnings, mtimeMs: st.mtimeMs, size: st.size };
+  dirCache.set(dir, entry);
+  return entry;
 }
 
 export async function findNearestConfig(startDir: string): Promise<FoundConfig | null> {
   let cur = path.resolve(startDir);
+  const warnings: string[] = [];
   while (true) {
-    const config = await loadConfigInDir(cur);
-    if (config) return { config, configDir: cur };
-    const parent = path.dirname(cur);
+    const entry = await loadConfigInDir(cur);
+    if (entry) {
+      if (entry.warnings.length) warnings.push(...entry.warnings);
+      return { config: entry.config, configDir: cur, warnings };
+    }    const parent = path.dirname(cur);
     if (parent === cur) return null;
     cur = parent;
   }
@@ -65,17 +429,129 @@ function scoreSpecificity(pattern: string): number {
   return score;
 }
 
-export function resolveOverrideEncoding(absFilePath: string, found: FoundConfig): string {
+function ruleMatches(rel: string, pattern: string): boolean {
+  if (!pattern) return false;
+  const isBare = !pattern.includes("/");
+  return micromatch.isMatch(rel, pattern, isBare ? { matchBase: true } : undefined);
+}
+
+function pickOverride(absFilePath: string, found: FoundConfig): { rule: OverrideRule | null; score: number } {
   const { config, configDir } = found;
-  if (!config.overrides?.length) return config.sourceEncoding;
+  if (!config.overrides?.length) return { rule: null, score: 0 };
   const rel = path.relative(configDir, absFilePath).replace(/\\/g, "/");
-  const matches = config.overrides
+  const matched = config.overrides
     .map((rule, index) => ({ rule, score: scoreSpecificity(rule.pattern), index }))
-    .filter((item) => {
-      if (!item.rule.pattern) return false;
-      const isBare = !item.rule.pattern.includes("/");
-      return micromatch.isMatch(rel, item.rule.pattern, isBare ? { matchBase: true } : undefined);
-    })
+    .filter((it) => ruleMatches(rel, it.rule.pattern))
     .sort((a, b) => b.score - a.score || a.index - b.index);
-  return matches[0]?.rule.sourceEncoding ?? config.sourceEncoding;
+  const best = matched[0];
+  return best ? { rule: best.rule, score: best.score } : { rule: null, score: 0 };
+}
+
+/**
+ * 单个文件的完整决策上下文：config 默认值 ← 最特异 override（逐字段覆盖）。
+ * 同时把「GB 系写 UTF-8 之外」的常见误配在这里合成一次，下游不再各自判断。
+ */
+export function resolveFileRule(absFilePath: string, found: FoundConfig): ResolvedConfig {
+  const { config, configDir } = found;
+  const { rule } = pickOverride(absFilePath, found);
+  const warnings = [...(found.warnings ?? [])];
+  const overrideRead = normalizeRuleLabel(rule?.encoding ?? rule?.sourceEncoding);
+  const sourceEncoding = overrideRead ?? config.sourceEncoding;
+  const rootWrite = normalizeRuleLabel(config.writeEncoding);
+  const rootSource = normalizeRuleLabel(config.sourceEncoding);
+  // “根配置有迁移意图” := 根同时写了 writeEncoding 且与 sourceEncoding 不同。
+  const migrationIntent = !!rootWrite && !!rootSource && rootWrite !== rootSource;
+  // override 只写 encoding 且根无迁移意图 → 写目标跟着该 override（“这个目录是 UTF-8”
+  // 的自然语义包含“新文件/纯 ASCII 文件也按 UTF-8 写”）；根有迁移意图时根赢，避免默默推翻迁移。
+  const writeEncoding =
+    normalizeRuleLabel(rule?.writeEncoding) ??
+    (overrideRead && !migrationIntent ? overrideRead : rootWrite ?? sourceEncoding);
+  if (migrationIntent && overrideRead && rootWrite && overrideRead !== rootWrite && !rule?.writeEncoding) {
+    warnings.push(
+      `${configDir}: 根配置带迁移意图（sourceEncoding=${rootSource} → writeEncoding=${rootWrite}），` +
+        `而 override "${rule?.pattern}" 只声明了读编码 ${overrideRead} → 该目录里**新建/纯 ASCII** 文件仍按 ${rootWrite} 写。` +
+        `要让它们也用 ${overrideRead}，请在那条 override 里显式加 "writeEncoding": "${overrideRead}"。`,
+    );
+  }
+  if (rule?.writeEncoding && rule.encoding === undefined && rule.sourceEncoding === undefined) {
+    warnings.push(`${configDir}: override "${rule.pattern}" 只写了 writeEncoding，读编码沿用 ${sourceEncoding}`);
+  }
+  const force = rule?.force ?? false;
+  // “明确的改写意图” := 合并后的 writeEncoding 与该作用域的读声明不同。
+  // 相等（包括“只是照拄了默认值”）视为无意图 → 已判定出编码的文件**保持自己的编码**。
+  // 这是“永不损坏既有编码”的一般形式：转码必须是用户显式要求，不能是默认行为的副作用。
+  const writeIntent = normalizeEncoding(writeEncoding) !== normalizeEncoding(sourceEncoding) ? writeEncoding : null;
+  if (isGBEncoding(writeEncoding) && isGBEncoding(sourceEncoding) && writeEncoding !== sourceEncoding) {
+    // 只对 GB 家族提示这个坑（P-4：GB18030 写既有 GBK 内容逐字节不变，反过来则不成立）
+    if (writeEncoding.toUpperCase() === "GBK" && sourceEncoding.toUpperCase() === "GB18030") {
+      warnings.push(
+        `${configDir}: writeEncoding=GBK 而 sourceEncoding=GB18030 —— 已存在的 4 字节扩展区字符会在写出时被闸门 1 拒绝（建议 writeEncoding 也用 GB18030）`,
+      );
+    }
+  }
+  return {
+    configDir,
+    sourceEncoding,
+    writeEncoding,
+    writeIntent,
+    readStrategy: rule?.readStrategy ?? config.readStrategy ?? DEFAULTS.readStrategy,
+    unmappable: rule?.unmappable ?? config.unmappable ?? DEFAULTS.unmappable,
+    verifyWrite: rule?.verifyWrite ?? config.verifyWrite ?? DEFAULTS.verifyWrite,
+    protectUtf8: rule?.protectUtf8 ?? config.protectUtf8 ?? DEFAULTS.protectUtf8,
+    autoCandidates: rule?.autoCandidates?.length
+      ? (rule.autoCandidates.map((c) => safeNormalize(String(c))).filter(Boolean) as string[])
+      : config.autoCandidates ?? DEFAULTS.autoCandidates,
+    force,
+    matchedPattern: rule?.pattern ?? null,
+    warnings,
+  };
+}
+
+function safeNormalize(label: string): string | null {
+  try {
+    return normalizeEncoding(label);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRuleLabel(label: string | undefined): string | null {
+  if (!label) return null;
+  const n = safeNormalize(label);
+  return n ?? null;
+}
+
+/** v1 API：只回读编码（grep / 旧测试用）。新代码请用 resolveFileRule + classify。 */
+export function resolveOverrideEncoding(absFilePath: string, found: FoundConfig): string {
+  return resolveFileRule(absFilePath, found).sourceEncoding;
+}
+
+/** P5：`bash`/`powershell` 输出转码的规则（根级配置，不做 override 匹配 —— 命令输出不属于某个文件） */
+export interface ShellTranscodeRule {
+  /** 生效的模式：normalizeBashMode 已把 true/"on" 归一成 "auto"，把垃圾值归一成 false */
+  mode: BashTranscodeMode;
+  /** 是否对 type/cat/Get-Content 这类“倒文件”命令用该文件自身的读编码 */
+  fileDump: boolean;
+  /** 字节判定失败时的第二候选（= 该作用域声明的编码；"auto" 模式下还会再退到 OS 码页） */
+  sourceEncoding: string;
+  autoCandidates: string[];
+  configDir: string;
+  warnings: string[];
+}
+
+/** 从 startDir 往上找最近的配置，返回 shell 转码规则；没配置或功能是关的 → null（零行为变化） */
+export function shellRuleFor(startDir: string): ShellTranscodeRule | null {
+  const found = findNearestConfigSync(startDir);
+  if (!found) return null;
+  const warnings: string[] = [...(found.warnings ?? [])];
+  const mode = normalizeBashMode(found.config.transcodeBash, found.configDir, warnings);
+  if (mode === false) return null;
+  return {
+    mode,
+    fileDump: found.config.bashFileDump !== false,
+    sourceEncoding: found.config.sourceEncoding,
+    autoCandidates: found.config.autoCandidates ?? [...DEFAULT_AUTO_CANDIDATES],
+    configDir: found.configDir,
+    warnings,
+  };
 }

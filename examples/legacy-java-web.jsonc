@@ -1,0 +1,27 @@
+// GBK 老 Java Web（Eclipse + Tomcat + SVN，无构建工具）—— OAWSSMS 实战配方
+// 用法：复制成项目根的 .encoding-converter.json，然后按你项目的实际目录名改 overrides。
+// 详细说明见 docs/CONFIG-GUIDE.md
+{
+  // 读侧歧义时的优先级；同时决定「纯 ASCII 文件 / 新建文件」写成什么
+  "sourceEncoding": "GBK",
+  // 与 IDE/容器读取编码严格一致 ⇒ 工具链零改动。团队把 Eclipse 编码改成 GB18030 后再改这行
+  "writeEncoding": "GBK",
+  "unmappable": "error",
+  "verifyWrite": true,
+  "protectUtf8": true,
+  "autoCandidates": ["GB18030", "GBK", "GB2312", "Big5"],
+  "overrides": [
+    // 由 UTF-8 作者维护的静态资源/模板目录（新文件也按 UTF-8）
+    { "pattern": "WebContent/MobileSSOA/**", "encoding": "UTF-8" },
+    { "pattern": "conf/tplt/**", "encoding": "UTF-8" },
+    // Java .properties 规范默认 ISO-8859-1：单字节编码只能 force（性质 P-6）
+    // escape 正好等于 native2ascii 约定：写中文 → \uXXXX，Properties.load() 能正确读回来
+    {
+      "pattern": "*.properties",
+      "encoding": "ISO-8859-1",
+      "force": true,
+      "writeEncoding": "ISO-8859-1",
+      "unmappable": "escape"
+    }
+  ]
+}

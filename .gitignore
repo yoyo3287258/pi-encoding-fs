@@ -1,3 +1,6 @@
 node_modules/
 *.log
 .DS_Store
+
+# fixture 生成物（真源：test/fixtures/build.ts；跑 npm run fixtures 重新生成）
+test/fixtures/out/

@@ -1,0 +1,18 @@
+# 仓库内一律 LF：避免 Windows 上 core.autocrlf 每次提交都改写工作副本
+* text=auto eol=lf
+
+# 二进制：换行归一化对它们是纯破坏（本扩展运行时会拒写二进制，这里防的是 git）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.class binary
+*.jar binary
+*.zip binary
+*.ttf binary
+*.eot binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
