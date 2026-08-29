@@ -24,7 +24,8 @@ cd D:\path\to\project
 pi install D:/develop/pi/pi-encoding-fs -l   # -l = 写进项目 .pi/settings.json（可进版本库共享）
 pi install D:/develop/pi/pi-encoding-fs      # 不加 -l = 写进 ~/.pi/agent/settings.json（只影响自己）
 #   ⚠️ 本地路径安装**不会**帮你 npm install（git 源才会）→ 先在包目录跑 npm install --omit=dev
-#   推到 GitHub 后可以换成：pi install git:github.com/yoyo3287258/pi-encoding-fs@v0.5.0 -l
+#   已经推到 GitHub 并打了 tag，所以另一台机器推荐：
+#   pi install git:github.com/yoyo3287258/pi-encoding-fs@v0.5.0 -l（git 源会自动跑 npm install）
 
 # ④ 重启 pi（不是 /reload：bash/powershell 工具覆盖在启动时注册；普通配置改动才不需要重启）
 ```

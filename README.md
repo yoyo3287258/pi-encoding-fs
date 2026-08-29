@@ -15,7 +15,7 @@
 > 因此**不要** `pi install npm:pi-encoding-fs`，请用本仓库（项目级安装，理由见下方 Requirements 与需求文档 §5.1/§5.2）。
 > 本 fork 的包名是 `@yoyo3287258/pi-encoding-fs`（`0.5.0`）；尚未发布到 npm，现在只能用本地路径或 git 安装。
 > 改造目标、红线与验收标准见需求文档
-> [`REQ-pi-encoding-fs-fork.md`](https://github.com/yoyo3287258/pi-encoding-fs/blob/main/REQ-pi-encoding-fs-fork.md)
+> [`REQ-pi-encoding-fs-fork.md`](https://github.com/yoyo3287258/pi-encoding-fs/blob/v0.5.0/REQ-pi-encoding-fs-fork.md)
 > （仓库根目录同路径），逐条验收证据见 [docs/ACCEPTANCE.md](./docs/ACCEPTANCE.md)。
 
 Encoding-aware `read` / `write` / `edit` / `grep` for [Pi](https://github.com/earendil-works).

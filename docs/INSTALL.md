@@ -34,9 +34,8 @@ pi 会 clone 到 `.pi/git/github.com/yoyo3287258/pi-encoding-fs`（用户级在
 
 ⚠️ **两个必须知道的点**
 
-1. **一定要写 `@ref` 钉住版本**。截至本文件提交时，fork 的 `main` 还是上游 0.4.0 的旧代码
-   （有 4 个已知缺陷、且依赖 Python）；P1–P5 全在分支 `feat/deterministic-classify` 上。
-   写 `@main` 或不带 ref 会**装到旧版**。
+1. **建议钉住 `@v0.5.0`**。fork 的 `main` 已经合进了本套代码（PR #1），所以 `@main` 不再是坑，
+   但钉 tag 才能保证你明天重装的还是今天这一版。
 2. 换版本用 `pi install git:...@新ref`（更新 settings 里的 pin），或 `pi update git:...`。
 
 ---
@@ -82,13 +81,20 @@ Hint: Start without extensions using "pi -ne".
 
 ---
 
-## 3. 路线 C：npm 包（如果决定发布）
+## 3. 路线 C：npm 包（**尚未发布**）
 
 ```powershell
-pi install npm:pi-encoding-fs@0.5.0 -l
+# 本 fork 的包名是 scoped 的（package.json 里已是这个名字）：
+pi install npm:@yoyo3287258/pi-encoding-fs@0.5.0 -l
 ```
 
-发布状态见 §6；没发布就别用这条。
+**为什么不用裸名 `pi-encoding-fs`**：npm 包名全局唯一，裸名已被上游
+（`15wtyuan`，最新 `0.4.0`）占着，我们发不上去；而本 fork 的行为与它并不兼容，
+也不应该发到同一个包里混淆用户。所以 `package.json` 的 `name` 已改成
+`@yoyo3287258/pi-encoding-fs`。
+
+**仍未发布**：scoped 包得由对应 npm 账号发（`@yoyo3287258` 这个 scope 得先在你的 npm
+账号下存在），而且发布就是不可逆的公开动作。要发请明确说一声。在那之前请用路线 A/B。
 
 ---
 
@@ -177,15 +183,14 @@ node E:\tools\pi-encoding-fs\tools\scan-encoding.mjs . --damaged  # 已被毁掉
 
 ---
 
-## 6. 当前分发状态（截至 P5 提交）
+## 6. 当前分发状态（`v0.5.0`）
 
 | 事项 | 状态 |
 |---|---|
-| 代码 | **已 push** 到 fork 分支 `feat/deterministic-classify`（比 `main` 多 15 个提交） |
-| fork 的 `main` | 还是上游 0.4.0 旧代码 → **现在装 `@main` 会拿到会毁 PNG 的老逻辑** |
-| tag / GitHub release | 无（等你确认后建 `v0.5.0`，建完就能用 `@v0.5.0` 安装） |
-| npm 发布 | 未做（包名 `pi-encoding-fs` 已被上游占用，`0.5.0` 版本号会撞；需要先决定改名或协商） |
-| CI（验收 A-9） | ✅ **双 OS 跑绿**（run 33231594192），证据见 [ACCEPTANCE.md](./ACCEPTANCE.md) |
+| 代码 | PR #1 已合进 fork 的 `main`（merge commit `20237e1`），分支 `feat/deterministic-classify` 同源 |
+| tag | **`v0.5.0` 已打并推** → 可以直接 `pi install git:github.com/yoyo3287258/pi-encoding-fs@v0.5.0 -l` |
+| GitHub release | 无（只有 tag；需要 release notes 再说一声） |
+| npm 发布 | **未做**。`package.json` 已改用 scoped 名 `@yoyo3287258/pi-encoding-fs`（裸名被上游占着），但还没真正 `npm publish`，见 §3 |
+| CI（验收 A-9） | ✅ **双 OS 跑绿**；merge 后的 `main`（`20237e1`）上 run 33233103506 也绿，证据见 [ACCEPTANCE.md](./ACCEPTANCE.md) |
 
-要走路线 A，还差**合进 `main` 或打 tag**（现在可以直接用 commit / 分支名装，只是不够稳定）：
-开 PR、合并、打 tag 这三步按需求文档 §0.5.4 需要你点头。在那之前，另一台机器请用**路线 B**。
+要走路线 A，现在拿 `@v0.5.0` 就能装（上面 §1）。另一台机器不能访外网时用**路线 B**。
